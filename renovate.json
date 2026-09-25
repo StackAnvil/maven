@@ -1,0 +1,4 @@
+{
+  "extends": ["config:recommended", "group:allNonMajor", ":semanticCommits"],
+  "reviewers": ["AlexProgrammerDE"]
+}
