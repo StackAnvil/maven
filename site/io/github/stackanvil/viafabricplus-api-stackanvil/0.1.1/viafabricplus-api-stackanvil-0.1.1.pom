@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.stackanvil</groupId>
+  <artifactId>viafabricplus-api-stackanvil</artifactId>
+  <version>0.1.1</version>
+  <name>ViaFabricPlus</name>
+  <description>Minecraft Fabric mod that allows you to join EVERY Minecraft server version (Classic, Alpha, Beta, Release, April Fools)</description>
+  <url>https://github.com/ViaVersion/ViaFabricPlus</url>
+  <licenses>
+    <license>
+      <name>GPL-3.0</name>
+      <url>https://github.com/ViaVersion/ViaFabricPlus/blob/main/LICENSE</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>florianreuth</id>
+      <name>Florian Reuth</name>
+      <email>git@florianreuth.de</email>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:git://github.com/ViaVersion/ViaFabricPlus.git</connection>
+    <developerConnection>scm:git:ssh://github.com/ViaVersion/ViaFabricPlus.git</developerConnection>
+    <url>https://github.com/ViaVersion/ViaFabricPlus</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>com.viaversion</groupId>
+      <artifactId>viaversion-common</artifactId>
+      <version>5.12.1-SNAPSHOT</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.viaversion</groupId>
+      <artifactId>viabackwards-common</artifactId>
+      <version>5.12.1-SNAPSHOT</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.viaversion</groupId>
+      <artifactId>viaaprilfools-common</artifactId>
+      <version>4.2.3</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>net.raphimc</groupId>
+      <artifactId>ViaLegacy</artifactId>
+      <version>3.1.0</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>net.fabricmc</groupId>
+      <artifactId>fabric-loader</artifactId>
+      <version>0.19.5</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>
