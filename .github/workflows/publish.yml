@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      verify_tag:
+        description: Release tag whose build artifact should be checked without importing it
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -25,9 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - name: Import new StackAnvil releases
+      - name: Verify release build access
+        if: inputs.verify_tag != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PATCHES_ARTIFACT_TOKEN || github.token }}
+          VERIFY_TAG: ${{ inputs.verify_tag }}
+        run: bun scripts/import-release.ts --verify-build "$VERIFY_TAG"
+      - name: Import new StackAnvil releases
+        if: inputs.verify_tag == ''
+        env:
+          GH_TOKEN: ${{ secrets.PATCHES_ARTIFACT_TOKEN || github.token }}
         run: bun scripts/import-release.ts
       - name: Commit Maven files
         id: commit

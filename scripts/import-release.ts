@@ -10,6 +10,7 @@ const root = join(import.meta.dir, "..");
 const site = join(root, "site");
 const incoming = join(root, ".incoming");
 const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viafabricplus"] as const;
+const sourceRepository = "StackAnvil/patches";
 const group = "io.github.stackanvil";
 const groupPath = "io/github/stackanvil";
 const stateFile = join(root, "imported-releases.json");
@@ -75,10 +76,9 @@ async function updateMetadata(artifactId: string): Promise<void> {
   await writeChecksums(metadata);
 }
 
-async function importJar(extracted: string, artifact: { file: string; sha256: string },
-  artifactId: string, version: string, pomPath: string): Promise<void> {
+async function importJar(source: string, pomSource: string, artifact: { file: string; sha256: string },
+  artifactId: string, version: string): Promise<void> {
   if (!artifact.file.endsWith("-StackAnvil.jar")) throw new Error(`Unbranded JAR: ${artifact.file}`);
-  const source = join(extracted, artifact.file);
   const jar = await readFile(source);
   if (checksum(jar, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
   const versionDir = join(site, groupPath, artifactId, version);
@@ -87,39 +87,103 @@ async function importJar(extracted: string, artifact: { file: string; sha256: st
   const jarFile = join(versionDir, `${artifactId}-${version}.jar`);
   const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
   await copyFile(source, jarFile);
-  await writeFile(pomFile, rewritePom(await readFile(join(extracted, pomPath), "utf8"), artifactId, version));
+  await writeFile(pomFile, rewritePom(await readFile(pomSource, "utf8"), artifactId, version));
   await writeChecksums(jarFile);
   await writeChecksums(pomFile);
   await updateMetadata(artifactId);
 }
 
 async function importProject(tag: string, project: (typeof projects)[number]): Promise<void> {
-  const archive = join(incoming, `${project}.tar.gz`);
-  const extracted = join(incoming, project);
-  await mkdir(extracted, { recursive: true });
-  await run("tar", ["-xzf", archive, "-C", extracted]);
-  const manifest = JSON.parse(await readFile(join(extracted, "manifest.json"), "utf8")) as Manifest;
+  const built = join(incoming, "build", project);
+  const manifest = JSON.parse(await readFile(join(built, "manifest.json"), "utf8")) as Manifest;
   if (manifest.target !== project || manifest.artifacts.length !== 1) {
     throw new Error(`Expected one fully patched artifact for ${project}`);
   }
   const version = tag.slice("stack-v".length);
-  await importJar(extracted, manifest.artifacts[0]!, `${project}-stackanvil`, version, "pom.xml");
+  const artifact = manifest.artifacts[0]!;
+  await importJar(join(incoming, "jars", artifact.file), join(built, "pom.xml"), artifact,
+    `${project}-stackanvil`, version);
   if (project === "viafabricplus") {
     const api = manifest.auxiliaryArtifacts?.find(({ file }) => file.startsWith("api/"));
     if (!api) throw new Error(`Release ${tag} is missing the ViaFabricPlus API artifact`);
-    await importJar(extracted, api, "viafabricplus-api-stackanvil", version, "api/pom.xml");
+    await importJar(join(built, api.file), join(built, "api", "pom.xml"), api,
+      "viafabricplus-api-stackanvil", version);
+  }
+}
+
+async function downloadReleaseBuild(tag: string): Promise<void> {
+  const runs = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository, "--workflow", "release.yml",
+    "--branch", tag, "--event", "push", "--status", "success", "--limit", "10", "--json", "databaseId,headBranch"])) as
+    { databaseId: number; headBranch: string }[];
+  const match = runs.find((entry) => entry.headBranch === tag);
+  if (!match) throw new Error(`No successful release build found for ${tag}`);
+  await run("gh", ["run", "download", String(match.databaseId), "--repo", sourceRepository,
+    "--name", "release-bundle", "--dir", join(incoming, "build")]);
+}
+
+async function downloadReleaseInputs(tag: string): Promise<void> {
+  await downloadReleaseBuild(tag);
+  await mkdir(join(incoming, "jars"), { recursive: true });
+  await run("gh", ["release", "download", tag, "--repo", sourceRepository,
+    "--pattern", "*-StackAnvil.jar", "--dir", join(incoming, "jars")]);
+  const jars = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
+  if (jars.length !== projects.length) throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
+}
+
+async function validateReleaseInputs(tag: string): Promise<void> {
+  const expected = new Set<string>();
+  for (const project of projects) {
+    const built = join(incoming, "build", project);
+    const manifest = JSON.parse(await readFile(join(built, "manifest.json"), "utf8")) as Manifest;
+    if (manifest.target !== project || manifest.artifacts.length !== 1) {
+      throw new Error(`Expected one fully patched artifact for ${project}`);
+    }
+    const artifact = manifest.artifacts[0]!;
+    if (expected.has(artifact.file)) throw new Error(`Duplicate release JAR: ${artifact.file}`);
+    expected.add(artifact.file);
+    const bytes = await readFile(join(incoming, "jars", artifact.file));
+    if (checksum(bytes, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
+    await readFile(join(built, "pom.xml"));
+    if (project === "viafabricplus") {
+      const api = manifest.auxiliaryArtifacts?.find(({ file }) => file.startsWith("api/"));
+      if (!api) throw new Error(`Release ${tag} is missing the ViaFabricPlus API artifact`);
+      const apiBytes = await readFile(join(built, api.file));
+      if (checksum(apiBytes, "sha256") !== api.sha256) throw new Error(`SHA-256 mismatch: ${api.file}`);
+      await readFile(join(built, "api", "pom.xml"));
+    }
+  }
+  const actual = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
+  if (actual.some((file) => !expected.has(file))) throw new Error(`Unexpected release JAR for ${tag}`);
+}
+
+async function verifyBuildAccess(tag: string): Promise<void> {
+  if (!/^stack-v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`Invalid release tag: ${tag}`);
+  await rm(incoming, { recursive: true, force: true });
+  await mkdir(incoming, { recursive: true });
+  try {
+    await downloadReleaseBuild(tag);
+    for (const project of projects) {
+      const manifest = JSON.parse(await readFile(join(incoming, "build", project, "manifest.json"), "utf8")) as Manifest;
+      if (manifest.target !== project || manifest.artifacts.length !== 1) {
+        throw new Error(`Incomplete release build for ${project}`);
+      }
+    }
+    console.log(`Release build is accessible: ${tag}`);
+  } finally {
+    await rm(incoming, { recursive: true, force: true });
   }
 }
 
 async function main(): Promise<void> {
   const imported = existsSync(stateFile) ? JSON.parse(await readFile(stateFile, "utf8")) as string[] : [];
-  const releases = JSON.parse(await run("gh", ["release", "list", "--repo", "StackAnvil/patches", "--order", "asc", "--limit", "1000", "--json", "tagName,isDraft,isPrerelease"])) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
+  const releases = JSON.parse(await run("gh", ["release", "list", "--repo", sourceRepository, "--order", "asc", "--limit", "1000", "--json", "tagName,isDraft,isPrerelease"])) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
   for (const release of releases) {
     const tag = release.tagName;
     if (release.isDraft || release.isPrerelease || !/^stack-v\d+\.\d+\.\d+$/.test(tag) || imported.includes(tag)) continue;
     await rm(incoming, { recursive: true, force: true });
     await mkdir(incoming, { recursive: true });
-    await run("gh", ["release", "download", tag, "--repo", "StackAnvil/patches", "--pattern", "*.tar.gz", "--dir", incoming]);
+    await downloadReleaseInputs(tag);
+    await validateReleaseInputs(tag);
     for (const project of projects) await importProject(tag, project);
     imported.push(tag);
     await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
@@ -128,4 +192,10 @@ async function main(): Promise<void> {
   await rm(incoming, { recursive: true, force: true });
 }
 
-if (import.meta.main) await main();
+if (import.meta.main) {
+  if (process.argv[2] === "--verify-build") {
+    const tag = process.argv[3];
+    if (!tag) throw new Error("Supply a release tag to verify");
+    await verifyBuildAccess(tag);
+  } else await main();
+}
