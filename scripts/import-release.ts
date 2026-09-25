@@ -17,7 +17,15 @@ const stateFile = join(root, "imported-releases.json");
 interface Manifest {
   target: string;
   artifacts: { file: string; sha256: string }[];
+  auxiliaryArtifacts?: { file: string; sha256: string }[];
 }
+
+const stackDependencies = new Map([
+  ["com.github.oryxel1:CubeConverter", "cubeconverter-stackanvil"],
+  ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
+  ["com.viaversion:viafabricplus", "viafabricplus-stackanvil"],
+  ["com.viaversion:viafabricplus-api", "viafabricplus-api-stackanvil"],
+]);
 
 async function run(program: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync(program, args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
@@ -35,12 +43,22 @@ async function writeChecksums(file: string): Promise<void> {
   }
 }
 
-function rewritePom(source: string, artifactId: string, version: string): string {
+export function rewritePom(source: string, artifactId: string, version: string): string {
   return source
     .replace(/  <!-- This module was also published[\s\S]*?  <!-- do_not_remove: published-with-gradle-metadata -->\n/, "")
     .replace(/<groupId>[^<]+<\/groupId>/, `<groupId>${group}</groupId>`)
     .replace(/<artifactId>[^<]+<\/artifactId>/, `<artifactId>${artifactId}</artifactId>`)
-    .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`);
+    .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`)
+    .replace(/<dependency>([\s\S]*?)<\/dependency>/g, (dependency) => {
+      const oldGroup = /<groupId>([^<]+)<\/groupId>/.exec(dependency)?.[1];
+      const oldArtifact = /<artifactId>([^<]+)<\/artifactId>/.exec(dependency)?.[1];
+      const replacement = stackDependencies.get(`${oldGroup}:${oldArtifact}`);
+      if (!replacement) return dependency;
+      return dependency
+        .replace(/<groupId>[^<]+<\/groupId>/, `<groupId>${group}</groupId>`)
+        .replace(/<artifactId>[^<]+<\/artifactId>/, `<artifactId>${replacement}</artifactId>`)
+        .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`);
+    });
 }
 
 async function updateMetadata(artifactId: string): Promise<void> {
@@ -57,6 +75,24 @@ async function updateMetadata(artifactId: string): Promise<void> {
   await writeChecksums(metadata);
 }
 
+async function importJar(extracted: string, artifact: { file: string; sha256: string },
+  artifactId: string, version: string, pomPath: string): Promise<void> {
+  if (!artifact.file.endsWith("-StackAnvil.jar")) throw new Error(`Unbranded JAR: ${artifact.file}`);
+  const source = join(extracted, artifact.file);
+  const jar = await readFile(source);
+  if (checksum(jar, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
+  const versionDir = join(site, groupPath, artifactId, version);
+  if (existsSync(versionDir)) throw new Error(`Release ${version} already has Maven files for ${artifactId}`);
+  await mkdir(versionDir, { recursive: true });
+  const jarFile = join(versionDir, `${artifactId}-${version}.jar`);
+  const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
+  await copyFile(source, jarFile);
+  await writeFile(pomFile, rewritePom(await readFile(join(extracted, pomPath), "utf8"), artifactId, version));
+  await writeChecksums(jarFile);
+  await writeChecksums(pomFile);
+  await updateMetadata(artifactId);
+}
+
 async function importProject(tag: string, project: (typeof projects)[number]): Promise<void> {
   const archive = join(incoming, `${project}.tar.gz`);
   const extracted = join(incoming, project);
@@ -66,35 +102,30 @@ async function importProject(tag: string, project: (typeof projects)[number]): P
   if (manifest.target !== project || manifest.artifacts.length !== 1) {
     throw new Error(`Expected one fully patched artifact for ${project}`);
   }
-  const artifact = manifest.artifacts[0]!;
-  if (!artifact.file.endsWith("-StackAnvil.jar")) throw new Error(`Unbranded JAR: ${artifact.file}`);
-  const jar = await readFile(join(extracted, artifact.file));
-  if (checksum(jar, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
-  const artifactId = `${project}-stackanvil`;
   const version = tag.slice("stack-v".length);
-  const versionDir = join(site, groupPath, artifactId, version);
-  if (existsSync(versionDir)) throw new Error(`Release ${tag} already has Maven files for ${project}`);
-  await mkdir(versionDir, { recursive: true });
-  const jarFile = join(versionDir, `${artifactId}-${version}.jar`);
-  const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
-  await copyFile(join(extracted, artifact.file), jarFile);
-  await writeFile(pomFile, rewritePom(await readFile(join(extracted, "pom.xml"), "utf8"), artifactId, version));
-  await writeChecksums(jarFile);
-  await writeChecksums(pomFile);
-  await updateMetadata(artifactId);
+  await importJar(extracted, manifest.artifacts[0]!, `${project}-stackanvil`, version, "pom.xml");
+  if (project === "viafabricplus") {
+    const api = manifest.auxiliaryArtifacts?.find(({ file }) => file.startsWith("api/"));
+    if (!api) throw new Error(`Release ${tag} is missing the ViaFabricPlus API artifact`);
+    await importJar(extracted, api, "viafabricplus-api-stackanvil", version, "api/pom.xml");
+  }
 }
 
-const imported = existsSync(stateFile) ? JSON.parse(await readFile(stateFile, "utf8")) as string[] : [];
-const releases = JSON.parse(await run("gh", ["release", "list", "--repo", "StackAnvil/patches", "--order", "asc", "--limit", "1000", "--json", "tagName,isDraft,isPrerelease"])) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
-for (const release of releases) {
-  const tag = release.tagName;
-  if (release.isDraft || release.isPrerelease || !/^stack-v\d+\.\d+\.\d+$/.test(tag) || imported.includes(tag)) continue;
+async function main(): Promise<void> {
+  const imported = existsSync(stateFile) ? JSON.parse(await readFile(stateFile, "utf8")) as string[] : [];
+  const releases = JSON.parse(await run("gh", ["release", "list", "--repo", "StackAnvil/patches", "--order", "asc", "--limit", "1000", "--json", "tagName,isDraft,isPrerelease"])) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
+  for (const release of releases) {
+    const tag = release.tagName;
+    if (release.isDraft || release.isPrerelease || !/^stack-v\d+\.\d+\.\d+$/.test(tag) || imported.includes(tag)) continue;
+    await rm(incoming, { recursive: true, force: true });
+    await mkdir(incoming, { recursive: true });
+    await run("gh", ["release", "download", tag, "--repo", "StackAnvil/patches", "--pattern", "*.tar.gz", "--dir", incoming]);
+    for (const project of projects) await importProject(tag, project);
+    imported.push(tag);
+    await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
+    console.log(`Imported ${tag}`);
+  }
   await rm(incoming, { recursive: true, force: true });
-  await mkdir(incoming, { recursive: true });
-  await run("gh", ["release", "download", tag, "--repo", "StackAnvil/patches", "--pattern", "*.tar.gz", "--dir", incoming]);
-  for (const project of projects) await importProject(tag, project);
-  imported.push(tag);
-  await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
-  console.log(`Imported ${tag}`);
 }
-await rm(incoming, { recursive: true, force: true });
+
+if (import.meta.main) await main();
