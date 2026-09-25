@@ -22,7 +22,7 @@ interface Manifest {
 }
 
 const stackDependencies = new Map([
-  ["com.github.oryxel1:CubeConverter", "cubeconverter-stackanvil"],
+  ["org.oryxel.cube:cubeconverter", "cubeconverter-stackanvil"],
   ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
   ["com.viaversion:viafabricplus", "viafabricplus-stackanvil"],
   ["com.viaversion:viafabricplus-api", "viafabricplus-api-stackanvil"],
@@ -115,9 +115,18 @@ async function downloadReleaseBuild(tag: string): Promise<void> {
   const runs = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository, "--workflow", "release.yml",
     "--branch", tag, "--event", "push", "--status", "success", "--limit", "10", "--json", "databaseId,headBranch"])) as
     { databaseId: number; headBranch: string }[];
-  const match = runs.find((entry) => entry.headBranch === tag);
-  if (!match) throw new Error(`No successful release build found for ${tag}`);
-  await run("gh", ["run", "download", String(match.databaseId), "--repo", sourceRepository,
+  let runId = runs.find((entry) => entry.headBranch === tag)?.databaseId;
+  if (!runId) {
+    const runNumber = /^stack-v0\.0\.(\d+)$/.exec(tag)?.[1];
+    if (runNumber) {
+      const dispatched = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository,
+        "--workflow", "release.yml", "--event", "workflow_dispatch", "--status", "success",
+        "--limit", "1000", "--json", "databaseId,number"])) as { databaseId: number; number: number }[];
+      runId = dispatched.find((entry) => entry.number === Number(runNumber))?.databaseId;
+    }
+  }
+  if (!runId) throw new Error(`No successful release build found for ${tag}`);
+  await run("gh", ["run", "download", String(runId), "--repo", sourceRepository,
     "--name", "release-bundle", "--dir", join(incoming, "build")]);
 }
 
@@ -130,10 +139,10 @@ async function downloadReleaseInputs(tag: string): Promise<void> {
   if (jars.length !== projects.length) throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
 }
 
-async function validateReleaseInputs(tag: string): Promise<void> {
+export async function validateReleaseInputs(tag: string, directory = incoming): Promise<void> {
   const expected = new Set<string>();
   for (const project of projects) {
-    const built = join(incoming, "build", project);
+    const built = join(directory, "build", project);
     const manifest = JSON.parse(await readFile(join(built, "manifest.json"), "utf8")) as Manifest;
     if (manifest.target !== project || manifest.artifacts.length !== 1) {
       throw new Error(`Expected one fully patched artifact for ${project}`);
@@ -141,7 +150,7 @@ async function validateReleaseInputs(tag: string): Promise<void> {
     const artifact = manifest.artifacts[0]!;
     if (expected.has(artifact.file)) throw new Error(`Duplicate release JAR: ${artifact.file}`);
     expected.add(artifact.file);
-    const bytes = await readFile(join(incoming, "jars", artifact.file));
+    const bytes = await readFile(join(directory, "jars", artifact.file));
     if (checksum(bytes, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
     await readFile(join(built, "pom.xml"));
     if (project === "viafabricplus") {
@@ -152,26 +161,8 @@ async function validateReleaseInputs(tag: string): Promise<void> {
       await readFile(join(built, "api", "pom.xml"));
     }
   }
-  const actual = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
+  const actual = (await readdir(join(directory, "jars"))).filter((file) => file.endsWith(".jar"));
   if (actual.some((file) => !expected.has(file))) throw new Error(`Unexpected release JAR for ${tag}`);
-}
-
-async function verifyBuildAccess(tag: string): Promise<void> {
-  if (!/^stack-v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`Invalid release tag: ${tag}`);
-  await rm(incoming, { recursive: true, force: true });
-  await mkdir(incoming, { recursive: true });
-  try {
-    await downloadReleaseBuild(tag);
-    for (const project of projects) {
-      const manifest = JSON.parse(await readFile(join(incoming, "build", project, "manifest.json"), "utf8")) as Manifest;
-      if (manifest.target !== project || manifest.artifacts.length !== 1) {
-        throw new Error(`Incomplete release build for ${project}`);
-      }
-    }
-    console.log(`Release build is accessible: ${tag}`);
-  } finally {
-    await rm(incoming, { recursive: true, force: true });
-  }
 }
 
 async function main(): Promise<void> {
@@ -192,10 +183,4 @@ async function main(): Promise<void> {
   await rm(incoming, { recursive: true, force: true });
 }
 
-if (import.meta.main) {
-  if (process.argv[2] === "--verify-build") {
-    const tag = process.argv[3];
-    if (!tag) throw new Error("Supply a release tag to verify");
-    await verifyBuildAccess(tag);
-  } else await main();
-}
+if (import.meta.main) await main();

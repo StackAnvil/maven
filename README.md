@@ -18,4 +18,6 @@ The other artifact IDs are `viafabricplus-bedrock-stackanvil`, `cubeconverter-st
 
 The import workflow downloads each release JAR and the matching release build artifact. It verifies the JARs against their SHA-256 manifests, rewrites the generated POM dependencies to this release's StackAnvil coordinates, and deploys the Maven files. The build artifact also supplies the ViaFabricPlus API JAR. The importer does not publish upstream-only or north-star PR builds.
 
+GitHub retains the build artifact for 90 days. The scheduled importer must process a release before that period ends.
+
 StackAnvil is independent of the upstream projects. Keep upstream copyright and license notices when using these artifacts.
