@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>StackAnvil Maven</title>
+    <style>
+      :root { color: #252823; background: #f7f7f3; font: 16px/1.55 system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+      header { display: flex; align-items: center; gap: 16px; padding-bottom: 24px; border-bottom: 2px solid #252823; }
+      header img { width: 54px; height: 54px; }
+      h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.6rem); line-height: 1.1; letter-spacing: -.035em; }
+      h2 { margin: 38px 0 10px; font-size: 1.2rem; }
+      p { max-width: 64ch; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      pre { overflow-x: auto; margin: 12px 0; padding: 16px 18px; border-left: 4px solid #de6a28; background: #ededE7; font-size: .9rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px 8px; border-bottom: 1px solid #d5d8d0; text-align: left; vertical-align: top; }
+      th { font-size: .85rem; }
+      a { color: #a34112; text-underline-offset: 3px; }
+      a:hover { color: #762b0b; }
+      a:focus-visible { outline: 2px solid #a34112; outline-offset: 3px; }
+      footer { margin-top: 42px; padding-top: 16px; border-top: 1px solid #d5d8d0; color: #52564f; font-size: .9rem; }
+      @media (max-width: 540px) { main { padding-top: 28px; } th, td { overflow-wrap: anywhere; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="logo.png" alt="StackAnvil logo" width="54" height="54">
+        <h1>StackAnvil Maven</h1>
+      </header>
+      <p>Fully patched builds for four Minecraft protocol projects. Each version comes from a <a href="https://github.com/StackAnvil/patches/releases">StackAnvil release</a>. PR test builds stay separate.</p>
+      <h2>Add the repository</h2>
+      <pre><code>repositories {
+    maven("https://stackanvil.github.io/maven/")
+}</code></pre>
+      <h2>Artifacts</h2>
+      <p>Group ID: <code>io.github.stackanvil</code>. Use the release version without the <code>stack-v</code> prefix.</p>
+      <table>
+        <thead><tr><th>Project</th><th>Artifact ID</th></tr></thead>
+        <tbody>
+          <tr><td>ViaBedrock</td><td><a href="io/github/stackanvil/viabedrock-stackanvil/maven-metadata.xml"><code>viabedrock-stackanvil</code></a></td></tr>
+          <tr><td>viafabricplus-bedrock</td><td><a href="io/github/stackanvil/viafabricplus-bedrock-stackanvil/maven-metadata.xml"><code>viafabricplus-bedrock-stackanvil</code></a></td></tr>
+          <tr><td>CubeConverter</td><td><a href="io/github/stackanvil/cubeconverter-stackanvil/maven-metadata.xml"><code>cubeconverter-stackanvil</code></a></td></tr>
+          <tr><td>ViaFabricPlus</td><td><a href="io/github/stackanvil/viafabricplus-stackanvil/maven-metadata.xml"><code>viafabricplus-stackanvil</code></a></td></tr>
+        </tbody>
+      </table>
+      <footer>These builds are experimental. See the <a href="https://github.com/StackAnvil/patches">patch stack and source</a> before using them.</footer>
+    </main>
+  </body>
+</html>
