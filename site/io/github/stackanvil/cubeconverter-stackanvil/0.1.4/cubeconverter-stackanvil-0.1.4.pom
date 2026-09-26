@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.stackanvil</groupId>
+  <artifactId>cubeconverter-stackanvil</artifactId>
+  <version>0.1.4</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.viaversion</groupId>
+      <artifactId>viaversion-common</artifactId>
+      <version>5.9.1</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.36</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.joml</groupId>
+      <artifactId>joml</artifactId>
+      <version>1.10.8</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>
