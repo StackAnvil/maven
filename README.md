@@ -14,7 +14,7 @@ dependencies {
 }
 ```
 
-The other artifact IDs are `viafabricplus-bedrock-stackanvil`, `cubeconverter-stackanvil`, `viafabricplus-stackanvil`, and `viafabricplus-api-stackanvil`. The Maven version is the StackAnvil release version without the `stack-v` tag prefix. Published versions remain immutable. For a current version, check [StackAnvil releases](https://github.com/StackAnvil/patches/releases).
+The other artifact IDs are `viafabricplus-bedrock-stackanvil`, `cubeconverter-stackanvil`, `viafabricplus-stackanvil`, `viafabricplus-api-stackanvil`, and `viaproxy-stackanvil`. The Maven version is the StackAnvil release version without the `stack-v` tag prefix. Published versions remain immutable. For a current version, check [StackAnvil releases](https://github.com/StackAnvil/patches/releases).
 
 The import workflow downloads each release JAR and the matching release build artifact. It verifies the JARs against their SHA-256 manifests, rewrites the generated POM dependencies to this release's StackAnvil coordinates, and deploys the Maven files. The build artifact also supplies the ViaFabricPlus API JAR. The importer does not publish upstream-only or north-star PR builds.
 

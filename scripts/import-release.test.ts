@@ -12,12 +12,18 @@ test("generated CubeConverter dependency uses this release's Maven coordinate", 
   expect(pom).not.toContain("<artifactId>cubeconverter</artifactId>");
 });
 
+test("ViaProxy depends on the ViaBedrock artifact from the same release", () => {
+  const source = `<project><groupId>net.raphimc</groupId><artifactId>ViaProxy</artifactId><version>3.4.14-StackAnvil</version><dependencies><dependency><groupId>net.raphimc</groupId><artifactId>ViaBedrock</artifactId><version>0.0.31-StackAnvil</version></dependency></dependencies></project>`;
+  const pom = rewritePom(source, "viaproxy-stackanvil", "1.0.0");
+  expect(pom).toContain("<artifactId>viabedrock-stackanvil</artifactId><version>1.0.0</version>");
+});
+
 test("release import checks every public JAR against its build manifest", async () => {
   const directory = await mkdtemp(join(tmpdir(), "stackanvil-maven-import-"));
   try {
     const jars = join(directory, "jars");
     await mkdir(jars);
-    const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viafabricplus"];
+    const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viafabricplus", "viaproxy"];
     for (const project of projects) {
       const built = join(directory, "build", project);
       await mkdir(built, { recursive: true });
