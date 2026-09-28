@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 const root = join(import.meta.dir, "..");
 const site = join(root, "site");
 const incoming = join(root, ".incoming");
-const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viafabricplus", "viaproxy"] as const;
+const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viaproxy"] as const;
 const sourceRepository = "StackAnvil/patches";
 const group = "io.github.stackanvil";
 const groupPath = "io/github/stackanvil";
@@ -18,14 +18,11 @@ const stateFile = join(root, "imported-releases.json");
 interface Manifest {
   target: string;
   artifacts: { file: string; sha256: string }[];
-  auxiliaryArtifacts?: { file: string; sha256: string }[];
 }
 
 const stackDependencies = new Map([
   ["org.oryxel.cube:cubeconverter", "cubeconverter-stackanvil"],
   ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
-  ["com.viaversion:viafabricplus", "viafabricplus-stackanvil"],
-  ["com.viaversion:viafabricplus-api", "viafabricplus-api-stackanvil"],
 ]);
 
 async function run(program: string, args: string[]): Promise<string> {
@@ -103,12 +100,6 @@ async function importProject(tag: string, project: (typeof projects)[number]): P
   const artifact = manifest.artifacts[0]!;
   await importJar(join(incoming, "jars", artifact.file), join(built, "pom.xml"), artifact,
     `${project}-stackanvil`, version);
-  if (project === "viafabricplus") {
-    const api = manifest.auxiliaryArtifacts?.find(({ file }) => file.startsWith("api/"));
-    if (!api) throw new Error(`Release ${tag} is missing the ViaFabricPlus API artifact`);
-    await importJar(join(built, api.file), join(built, "api", "pom.xml"), api,
-      "viafabricplus-api-stackanvil", version);
-  }
 }
 
 async function downloadReleaseBuild(tag: string): Promise<void> {
@@ -139,7 +130,7 @@ async function downloadReleaseInputs(tag: string): Promise<void> {
   if (jars.length !== projects.length) throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
 }
 
-export async function validateReleaseInputs(tag: string, directory = incoming): Promise<void> {
+export async function validateReleaseInputs(directory = incoming): Promise<void> {
   const expected = new Set<string>();
   for (const project of projects) {
     const built = join(directory, "build", project);
@@ -153,16 +144,10 @@ export async function validateReleaseInputs(tag: string, directory = incoming): 
     const bytes = await readFile(join(directory, "jars", artifact.file));
     if (checksum(bytes, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
     await readFile(join(built, "pom.xml"));
-    if (project === "viafabricplus") {
-      const api = manifest.auxiliaryArtifacts?.find(({ file }) => file.startsWith("api/"));
-      if (!api) throw new Error(`Release ${tag} is missing the ViaFabricPlus API artifact`);
-      const apiBytes = await readFile(join(built, api.file));
-      if (checksum(apiBytes, "sha256") !== api.sha256) throw new Error(`SHA-256 mismatch: ${api.file}`);
-      await readFile(join(built, "api", "pom.xml"));
-    }
   }
   const actual = (await readdir(join(directory, "jars"))).filter((file) => file.endsWith(".jar"));
-  if (actual.some((file) => !expected.has(file))) throw new Error(`Unexpected release JAR for ${tag}`);
+  const unexpected = actual.find((file) => !expected.has(file));
+  if (unexpected) throw new Error(`Unexpected release JAR: ${unexpected}`);
 }
 
 async function main(): Promise<void> {
@@ -174,7 +159,7 @@ async function main(): Promise<void> {
     await rm(incoming, { recursive: true, force: true });
     await mkdir(incoming, { recursive: true });
     await downloadReleaseInputs(tag);
-    await validateReleaseInputs(tag);
+    await validateReleaseInputs();
     for (const project of projects) await importProject(tag, project);
     imported.push(tag);
     await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);

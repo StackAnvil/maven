@@ -18,12 +18,18 @@ test("ViaProxy depends on the ViaBedrock artifact from the same release", () => 
   expect(pom).toContain("<artifactId>viabedrock-stackanvil</artifactId><version>1.0.0</version>");
 });
 
+test("the Bedrock add-on keeps its upstream ViaFabricPlus dependency", () => {
+  const source = `<project><groupId>com.viaversion</groupId><artifactId>viafabricplus-bedrock</artifactId><version>1.1.1-StackAnvil</version><dependencies><dependency><groupId>com.viaversion</groupId><artifactId>viafabricplus</artifactId><version>5.1.1</version></dependency></dependencies></project>`;
+  const pom = rewritePom(source, "viafabricplus-bedrock-stackanvil", "1.0.0");
+  expect(pom).toContain("<groupId>com.viaversion</groupId><artifactId>viafabricplus</artifactId><version>5.1.1</version>");
+});
+
 test("release import checks every public JAR against its build manifest", async () => {
   const directory = await mkdtemp(join(tmpdir(), "stackanvil-maven-import-"));
   try {
     const jars = join(directory, "jars");
     await mkdir(jars);
-    const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viafabricplus", "viaproxy"];
+    const projects = ["viabedrock", "viafabricplus-bedrock", "cubeconverter", "viaproxy"];
     for (const project of projects) {
       const built = join(directory, "build", project);
       await mkdir(built, { recursive: true });
@@ -34,24 +40,20 @@ test("release import checks every public JAR against its build manifest", async 
       const manifest = {
         target: project,
         artifacts: [{ file, sha256: createHash("sha256").update(bytes).digest("hex") }],
-        auxiliaryArtifacts: [] as { file: string; sha256: string }[],
       };
-      if (project === "viafabricplus") {
-        await mkdir(join(built, "api"));
-        const api = Buffer.from("api");
-        const apiFile = "api/viafabricplus-api-StackAnvil.jar";
-        await writeFile(join(built, apiFile), api);
-        await writeFile(join(built, "api", "pom.xml"), "<project/>");
-        manifest.auxiliaryArtifacts.push({ file: apiFile, sha256: createHash("sha256").update(api).digest("hex") });
-      }
       await writeFile(join(built, "manifest.json"), JSON.stringify(manifest));
     }
 
-    await validateReleaseInputs("stack-v1.0.0", directory);
+    await validateReleaseInputs(directory);
+
+    const upstreamJar = join(jars, "ViaFabricPlus-5.1.1.jar");
+    await writeFile(upstreamJar, "upstream artifact");
+    await expect(validateReleaseInputs(directory)).rejects.toThrow(/Unexpected release JAR/);
+    await rm(upstreamJar);
 
     const changed = join(jars, "viabedrock-StackAnvil.jar");
     await writeFile(changed, `${await readFile(changed, "utf8")} changed`);
-    await expect(validateReleaseInputs("stack-v1.0.0", directory)).rejects.toThrow(/SHA-256 mismatch/);
+    await expect(validateReleaseInputs(directory)).rejects.toThrow(/SHA-256 mismatch/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
