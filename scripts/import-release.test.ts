@@ -3,7 +3,19 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { rewritePom, validateReleaseInputs } from "./import-release.ts";
+import { hasPublishedRelease, rewritePom, validateReleaseInputs } from "./import-release.ts";
+
+test("Maven accepts a release when a later add-on upload fails", () => {
+  expect(hasPublishedRelease([
+    { name: "build", conclusion: "success" },
+    { name: "publish", conclusion: "success" },
+    { name: "publish_addon / publish (modrinth)", conclusion: "failure" },
+  ])).toBe(true);
+  expect(hasPublishedRelease([
+    { name: "build", conclusion: "success" },
+    { name: "publish", conclusion: "failure" },
+  ])).toBe(false);
+});
 
 test("generated CubeConverter dependency uses this release's Maven coordinate", () => {
   const source = `<project><groupId>source</groupId><artifactId>source</artifactId><version>1</version><dependencies><dependency><groupId>org.oryxel.cube</groupId><artifactId>cubeconverter</artifactId><version>1.3-StackAnvil</version></dependency></dependencies></project>`;

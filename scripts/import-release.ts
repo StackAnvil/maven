@@ -20,6 +20,17 @@ interface Manifest {
   artifacts: { file: string; sha256: string }[];
 }
 
+interface ReleaseRun {
+  databaseId: number;
+  headBranch?: string;
+  number?: number;
+}
+
+interface ReleaseJob {
+  name: string;
+  conclusion: string;
+}
+
 const stackDependencies = new Map([
   ["org.oryxel.cube:cubeconverter", "cubeconverter-stackanvil"],
   ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
@@ -102,21 +113,33 @@ async function importProject(tag: string, project: (typeof projects)[number]): P
     `${project}-stackanvil`, version);
 }
 
+export function hasPublishedRelease(jobs: ReleaseJob[]): boolean {
+  return ["build", "publish"].every((name) => jobs.some((job) => job.name === name && job.conclusion === "success"));
+}
+
 async function downloadReleaseBuild(tag: string): Promise<void> {
-  const runs = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository, "--workflow", "release.yml",
-    "--branch", tag, "--event", "push", "--status", "success", "--limit", "10", "--json", "databaseId,headBranch"])) as
-    { databaseId: number; headBranch: string }[];
-  let runId = runs.find((entry) => entry.headBranch === tag)?.databaseId;
-  if (!runId) {
+  let runs = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository, "--workflow", "release.yml",
+    "--branch", tag, "--event", "push", "--status", "completed", "--limit", "10", "--json", "databaseId,headBranch"])) as ReleaseRun[];
+  runs = runs.filter((entry) => entry.headBranch === tag);
+  if (!runs.length) {
     const runNumber = /^stack-v0\.0\.(\d+)$/.exec(tag)?.[1];
     if (runNumber) {
       const dispatched = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository,
-        "--workflow", "release.yml", "--event", "workflow_dispatch", "--status", "success",
-        "--limit", "1000", "--json", "databaseId,number"])) as { databaseId: number; number: number }[];
-      runId = dispatched.find((entry) => entry.number === Number(runNumber))?.databaseId;
+        "--workflow", "release.yml", "--event", "workflow_dispatch", "--status", "completed",
+        "--limit", "1000", "--json", "databaseId,number"])) as ReleaseRun[];
+      runs = dispatched.filter((entry) => entry.number === Number(runNumber));
     }
   }
-  if (!runId) throw new Error(`No successful release build found for ${tag}`);
+  let runId: number | undefined;
+  for (const candidate of runs) {
+    const details = JSON.parse(await run("gh", ["run", "view", String(candidate.databaseId), "--repo", sourceRepository,
+      "--json", "jobs"])) as { jobs: ReleaseJob[] };
+    if (hasPublishedRelease(details.jobs)) {
+      runId = candidate.databaseId;
+      break;
+    }
+  }
+  if (!runId) throw new Error(`No completed build and release publication found for ${tag}`);
   await run("gh", ["run", "download", String(runId), "--repo", sourceRepository,
     "--name", "release-bundle", "--dir", join(incoming, "build")]);
 }
@@ -124,8 +147,16 @@ async function downloadReleaseBuild(tag: string): Promise<void> {
 async function downloadReleaseInputs(tag: string): Promise<void> {
   await downloadReleaseBuild(tag);
   await mkdir(join(incoming, "jars"), { recursive: true });
+  const patterns: string[] = [];
+  for (const project of projects) {
+    const manifest = JSON.parse(await readFile(join(incoming, "build", project, "manifest.json"), "utf8")) as Manifest;
+    if (manifest.target !== project || manifest.artifacts.length !== 1) {
+      throw new Error(`Expected one fully patched artifact for ${project}`);
+    }
+    patterns.push("--pattern", manifest.artifacts[0]!.file);
+  }
   await run("gh", ["release", "download", tag, "--repo", sourceRepository,
-    "--pattern", "*-StackAnvil.jar", "--dir", join(incoming, "jars")]);
+    ...patterns, "--dir", join(incoming, "jars")]);
   const jars = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
   if (jars.length !== projects.length) throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
 }
