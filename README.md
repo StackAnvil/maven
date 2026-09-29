@@ -1,12 +1,12 @@
 # StackAnvil Maven repository
 
-This repository stores the fully patched artifacts from [StackAnvil releases](https://github.com/StackAnvil/patches/releases). GitHub Pages serves the Maven layout at `https://stackanvil.github.io/maven/`.
+This repository stores the fully patched artifacts from [StackAnvil releases](https://github.com/StackAnvil/patches/releases). GitHub Pages serves the Maven layout at `https://stackanvil-maven.pistonmaster.net/`.
 
 Add the repository to Gradle:
 
 ```kotlin
 repositories {
-    maven("https://stackanvil.github.io/maven/")
+    maven("https://stackanvil-maven.pistonmaster.net/")
 }
 
 dependencies {
