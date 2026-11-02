@@ -7,6 +7,6 @@ export default defineConfig({
     entrypoint: "./worker/index.ts",
     compatibilityDate: "2026-11-02",
     workersDev: false,
-    triggers: [triggers.fetch({ pattern: "stackanvil-maven.pistonmaster.net/io/github/stackanvil/*.jar", zone: "pistonmaster.net" })],
+    triggers: [triggers.fetch({ pattern: "stackanvil-maven.pistonmaster.net/io/github/stackanvil/*", zone: "pistonmaster.net" })],
   },
 });
