@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Import one release tag, or leave empty to import all releases'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -27,9 +32,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun test
       - name: Import new StackAnvil releases
+        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bun scripts/import-release.ts
+          IMPORT_TAG: ${{ inputs.tag }}
+        run: bun scripts/import-release.ts "$IMPORT_TAG"
       - name: Commit Maven files
         id: commit
         run: |

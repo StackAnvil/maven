@@ -1,9 +1,45 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { hasPublishedRelease, rewritePom, validateReleaseInputs } from "./import-release.ts";
+import { findPublishedRun, hasPublishedRelease, importJar, rewritePom, validateReleaseInputs } from "./import-release.ts";
+
+test("a cancelled release does not prevent selection of a published run", async () => {
+  const cancelled = [{ name: "build", conclusion: "cancelled" }, { name: "publish", conclusion: "skipped" }];
+  const published = [{ name: "build", conclusion: "success" }, { name: "publish", conclusion: "success" }];
+  expect(await findPublishedRun([{ databaseId: 1 }], async () => cancelled)).toBeUndefined();
+  expect(await findPublishedRun([{ databaseId: 1 }, { databaseId: 2 }], async (id) => id === 1 ? cancelled : published)).toBe(2);
+  await expect(findPublishedRun([{ databaseId: 1 }], async () => { throw new Error("API unavailable"); })).rejects.toThrow("API unavailable");
+});
+
+test("Maven publishes checksums and a release URL without storing the JAR in Git", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "stackanvil-maven-artifact-"));
+  try {
+    const bytes = Buffer.from("release JAR");
+    const file = "viafabricplus-bedrock-1.2.1-StackAnvil.jar";
+    const jar = join(directory, file);
+    const pom = join(directory, "pom.xml");
+    await writeFile(jar, bytes);
+    await writeFile(pom, "<project><groupId>source</groupId><artifactId>addon</artifactId><version>1</version></project>");
+    const artifact = { file, sha256: createHash("sha256").update(bytes).digest("hex") };
+    const repository = join(directory, "repository");
+    const artifactId = "viafabricplus-bedrock-stackanvil";
+    await importJar(jar, pom, artifact, artifactId, "0.4.4", repository);
+    const versionDir = join(repository, "io/github/stackanvil", artifactId, "0.4.4");
+    const name = `${artifactId}-0.4.4.jar`;
+    expect(await readdir(versionDir)).not.toContain(name);
+    expect(await readFile(join(versionDir, `${name}.url`), "utf8")).toBe(`https://github.com/StackAnvil/patches/releases/download/stack-v0.4.4/${file}\n`);
+    for (const algorithm of ["sha1", "sha256"]) {
+      expect(await readFile(join(versionDir, `${name}.${algorithm}`), "utf8")).toBe(`${createHash(algorithm).update(bytes).digest("hex")}\n`);
+    }
+    expect(await readFile(join(versionDir, `${artifactId}-0.4.4.pom`), "utf8")).toContain("<version>0.4.4</version>");
+    await expect(importJar(jar, pom, artifact, artifactId, "0.4.4", repository)).rejects.toThrow("already has Maven files");
+    await expect(importJar(jar, pom, { ...artifact, sha256: "wrong" }, artifactId, "0.4.5", repository)).rejects.toThrow("SHA-256 mismatch");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Maven accepts a release when a later add-on upload fails", () => {
   expect(hasPublishedRelease([

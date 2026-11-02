@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -45,10 +45,10 @@ function checksum(bytes: Buffer, algorithm: "sha1" | "sha256"): string {
   return createHash(algorithm).update(bytes).digest("hex");
 }
 
-async function writeChecksums(file: string): Promise<void> {
-  const bytes = await readFile(file);
+async function writeChecksums(file: string, bytes?: Buffer): Promise<void> {
+  const contents = bytes ?? await readFile(file);
   for (const algorithm of ["sha1", "sha256"] as const) {
-    await writeFile(`${file}.${algorithm}`, `${checksum(bytes, algorithm)}\n`);
+    await writeFile(`${file}.${algorithm}`, `${checksum(contents, algorithm)}\n`);
   }
 }
 
@@ -84,21 +84,21 @@ async function updateMetadata(artifactId: string): Promise<void> {
   await writeChecksums(metadata);
 }
 
-async function importJar(source: string, pomSource: string, artifact: { file: string; sha256: string },
-  artifactId: string, version: string): Promise<void> {
+export async function importJar(source: string, pomSource: string, artifact: { file: string; sha256: string },
+  artifactId: string, version: string, repository = site): Promise<void> {
   if (!artifact.file.endsWith("-StackAnvil.jar")) throw new Error(`Unbranded JAR: ${artifact.file}`);
   const jar = await readFile(source);
   if (checksum(jar, "sha256") !== artifact.sha256) throw new Error(`SHA-256 mismatch: ${artifact.file}`);
-  const versionDir = join(site, groupPath, artifactId, version);
+  const versionDir = join(repository, groupPath, artifactId, version);
   if (existsSync(versionDir)) throw new Error(`Release ${version} already has Maven files for ${artifactId}`);
   await mkdir(versionDir, { recursive: true });
   const jarFile = join(versionDir, `${artifactId}-${version}.jar`);
   const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
-  await copyFile(source, jarFile);
+  const download = `https://github.com/${sourceRepository}/releases/download/stack-v${version}/${encodeURIComponent(artifact.file)}`;
+  await writeFile(`${jarFile}.url`, `${download}\n`);
   await writeFile(pomFile, rewritePom(await readFile(pomSource, "utf8"), artifactId, version));
-  await writeChecksums(jarFile);
+  await writeChecksums(jarFile, jar);
   await writeChecksums(pomFile);
-  await updateMetadata(artifactId);
 }
 
 async function importProject(tag: string, project: (typeof projects)[number]): Promise<void> {
@@ -111,13 +111,20 @@ async function importProject(tag: string, project: (typeof projects)[number]): P
   const artifact = manifest.artifacts[0]!;
   await importJar(join(incoming, "jars", artifact.file), join(built, "pom.xml"), artifact,
     `${project}-stackanvil`, version);
+  await updateMetadata(`${project}-stackanvil`);
 }
 
 export function hasPublishedRelease(jobs: ReleaseJob[]): boolean {
   return ["build", "publish"].every((name) => jobs.some((job) => job.name === name && job.conclusion === "success"));
 }
 
-async function downloadReleaseBuild(tag: string): Promise<void> {
+export async function findPublishedRun(runs: ReleaseRun[], loadJobs: (runId: number) => Promise<ReleaseJob[]>): Promise<number | undefined> {
+  for (const candidate of runs) {
+    if (hasPublishedRelease(await loadJobs(candidate.databaseId))) return candidate.databaseId;
+  }
+}
+
+async function downloadReleaseBuild(tag: string): Promise<boolean> {
   let runs = JSON.parse(await run("gh", ["run", "list", "--repo", sourceRepository, "--workflow", "release.yml",
     "--branch", tag, "--event", "push", "--status", "completed", "--limit", "10", "--json", "databaseId,headBranch"])) as ReleaseRun[];
   runs = runs.filter((entry) => entry.headBranch === tag);
@@ -130,22 +137,19 @@ async function downloadReleaseBuild(tag: string): Promise<void> {
       runs = dispatched.filter((entry) => entry.number === Number(runNumber));
     }
   }
-  let runId: number | undefined;
-  for (const candidate of runs) {
-    const details = JSON.parse(await run("gh", ["run", "view", String(candidate.databaseId), "--repo", sourceRepository,
+  const runId = await findPublishedRun(runs, async (id) => {
+    const details = JSON.parse(await run("gh", ["run", "view", String(id), "--repo", sourceRepository,
       "--json", "jobs"])) as { jobs: ReleaseJob[] };
-    if (hasPublishedRelease(details.jobs)) {
-      runId = candidate.databaseId;
-      break;
-    }
-  }
-  if (!runId) throw new Error(`No completed build and release publication found for ${tag}`);
+    return details.jobs;
+  });
+  if (!runId) return false;
   await run("gh", ["run", "download", String(runId), "--repo", sourceRepository,
     "--name", "release-bundle", "--dir", join(incoming, "build")]);
+  return true;
 }
 
-async function downloadReleaseInputs(tag: string): Promise<void> {
-  await downloadReleaseBuild(tag);
+async function downloadReleaseInputs(tag: string): Promise<boolean> {
+  if (!await downloadReleaseBuild(tag)) return false;
   await mkdir(join(incoming, "jars"), { recursive: true });
   const patterns: string[] = [];
   for (const project of projects) {
@@ -159,6 +163,7 @@ async function downloadReleaseInputs(tag: string): Promise<void> {
     ...patterns, "--dir", join(incoming, "jars")]);
   const jars = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
   if (jars.length !== projects.length) throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
+  return true;
 }
 
 export async function validateReleaseInputs(directory = incoming): Promise<void> {
@@ -182,20 +187,27 @@ export async function validateReleaseInputs(directory = incoming): Promise<void>
 }
 
 async function main(): Promise<void> {
+  const requestedTag = process.argv[2] || undefined;
+  if (requestedTag && !/^stack-v\d+\.\d+\.\d+$/.test(requestedTag)) throw new Error(`Invalid release tag: ${requestedTag}`);
   const imported = existsSync(stateFile) ? JSON.parse(await readFile(stateFile, "utf8")) as string[] : [];
   const releases = JSON.parse(await run("gh", ["release", "list", "--repo", sourceRepository, "--order", "asc", "--limit", "1000", "--json", "tagName,isDraft,isPrerelease"])) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
   for (const release of releases) {
     const tag = release.tagName;
+    if (requestedTag && tag !== requestedTag) continue;
     if (release.isDraft || release.isPrerelease || !/^stack-v\d+\.\d+\.\d+$/.test(tag) || imported.includes(tag)) continue;
     await rm(incoming, { recursive: true, force: true });
     await mkdir(incoming, { recursive: true });
-    await downloadReleaseInputs(tag);
+    if (!await downloadReleaseInputs(tag)) {
+      console.warn(`Skipping ${tag}: no completed build and release publication; retrying on the next import`);
+      continue;
+    }
     await validateReleaseInputs();
     for (const project of projects) await importProject(tag, project);
     imported.push(tag);
     await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
     console.log(`Imported ${tag}`);
   }
+  if (requestedTag && !imported.includes(requestedTag)) throw new Error(`Release was not imported: ${requestedTag}`);
   await rm(incoming, { recursive: true, force: true });
 }
 
