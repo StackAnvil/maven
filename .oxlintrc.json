@@ -8,7 +8,7 @@
   },
   "options": {
     "typeAware": true,
-    "typeCheck": false,
+    "typeCheck": true,
     "denyWarnings": true,
     "reportUnusedDisableDirectives": "error"
   },

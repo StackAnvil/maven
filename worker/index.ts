@@ -1,10 +1,9 @@
 const metadataRoot = "https://raw.githubusercontent.com/StackAnvil/maven/main/site";
 const releaseRoot = "https://github.com/StackAnvil/patches/releases/download/";
 
-export async function handleRequest(
-  request: Request,
-  fetcher: typeof fetch = fetch,
-): Promise<Response> {
+type Fetcher = (input: string | Request) => Promise<Response>;
+
+export async function handleRequest(request: Request, fetcher: Fetcher = fetch): Promise<Response> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/io/github/stackanvil/") || !url.pathname.endsWith(".jar"))
     return fetcher(request);

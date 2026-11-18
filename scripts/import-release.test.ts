@@ -12,6 +12,17 @@ import {
   validateReleaseInputs,
 } from "./import-release.ts";
 
+async function rejectionOf(promise: Promise<unknown>): Promise<() => never> {
+  try {
+    await promise;
+  } catch (error) {
+    return () => {
+      throw error;
+    };
+  }
+  throw new Error("Expected the promise to reject");
+}
+
 test("a cancelled release does not prevent selection of a published run", async () => {
   const cancelled = [
     { name: "build", conclusion: "cancelled" },
@@ -27,11 +38,13 @@ test("a cancelled release does not prevent selection of a published run", async 
       id === 1 ? cancelled : published,
     ),
   ).toBe(2);
-  await expect(
-    findPublishedRun([{ databaseId: 1 }], async () => {
-      throw new Error("API unavailable");
-    }),
-  ).rejects.toThrow("API unavailable");
+  expect(
+    await rejectionOf(
+      findPublishedRun([{ databaseId: 1 }], async () => {
+        throw new Error("API unavailable");
+      }),
+    ),
+  ).toThrow("API unavailable");
 });
 
 test("Maven publishes checksums and a release URL without storing the JAR in Git", async () => {
@@ -64,12 +77,14 @@ test("Maven publishes checksums and a release URL without storing the JAR in Git
     expect(await readFile(join(versionDir, `${artifactId}-0.4.4.pom`), "utf8")).toContain(
       "<version>0.4.4</version>",
     );
-    await expect(importJar(jar, pom, artifact, artifactId, "0.4.4", repository)).rejects.toThrow(
-      "already has Maven files",
-    );
-    await expect(
-      importJar(jar, pom, { ...artifact, sha256: "wrong" }, artifactId, "0.4.5", repository),
-    ).rejects.toThrow("SHA-256 mismatch");
+    expect(
+      await rejectionOf(importJar(jar, pom, artifact, artifactId, "0.4.4", repository)),
+    ).toThrow("already has Maven files");
+    expect(
+      await rejectionOf(
+        importJar(jar, pom, { ...artifact, sha256: "wrong" }, artifactId, "0.4.5", repository),
+      ),
+    ).toThrow("SHA-256 mismatch");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -138,12 +153,12 @@ test("release import checks every public JAR against its build manifest", async 
 
     const upstreamJar = join(jars, "ViaFabricPlus-5.1.1.jar");
     await writeFile(upstreamJar, "upstream artifact");
-    await expect(validateReleaseInputs(directory)).rejects.toThrow(/Unexpected release JAR/);
+    expect(await rejectionOf(validateReleaseInputs(directory))).toThrow(/Unexpected release JAR/);
     await rm(upstreamJar);
 
     const changed = join(jars, "viabedrock-StackAnvil.jar");
     await writeFile(changed, `${await readFile(changed, "utf8")} changed`);
-    await expect(validateReleaseInputs(directory)).rejects.toThrow(/SHA-256 mismatch/);
+    expect(await rejectionOf(validateReleaseInputs(directory))).toThrow(/SHA-256 mismatch/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
