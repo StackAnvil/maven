@@ -1,6 +1,7 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node", "effecttsgo"],
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -63,5 +64,15 @@
       }
     ],
     "typescript/prefer-ts-expect-error": "error"
-  }
+  },
+  "overrides": [
+    {
+      // effecttsgo/missing-return-yield-star requires `return yield*` for failures in Effect
+      // generators that otherwise return nothing, which typescript/consistent-return reports.
+      "files": ["scripts/import-release.ts"],
+      "rules": {
+        "typescript/consistent-return": "off"
+      }
+    }
+  ]
 }

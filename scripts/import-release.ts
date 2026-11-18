@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+
+import { Clock, Console, Context, Data, Effect, Layer, Schema } from "effect";
 
 const execFileAsync = promisify(execFile);
 const root = join(import.meta.dir, "..");
@@ -14,107 +15,164 @@ const sourceRepository = "StackAnvil/patches";
 const group = "io.github.stackanvil";
 const groupPath = "io/github/stackanvil";
 const stateFile = join(root, "imported-releases.json");
+const releaseTag = /^stack-v\d+\.\d+\.\d+$/;
 
-interface Manifest {
-  target: string;
-  artifacts: { file: string; sha256: string }[];
+function describe(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
-interface ReleaseRun {
-  databaseId: number;
-  headBranch?: string;
-  number?: number;
+/** A `gh` command failed or could not start. */
+export class CommandError extends Data.TaggedError("CommandError")<{
+  readonly args: readonly string[];
+  readonly cause: unknown;
+}> {
+  override get message() {
+    return describe(this.cause);
+  }
 }
 
-interface ReleaseJob {
-  name: string;
-  conclusion: string;
+/** A file system operation failed. */
+export class FileError extends Data.TaggedError("FileError")<{
+  readonly operation: string;
+  readonly path: string;
+  readonly cause: unknown;
+}> {
+  override get message() {
+    return `Could not ${this.operation} ${this.path}: ${describe(this.cause)}`;
+  }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+/** A file or `gh` response is not valid JSON or has an unexpected shape. */
+export class JsonShapeError extends Data.TaggedError("JsonShapeError")<{
+  readonly source: string;
+  readonly cause: unknown;
+}> {
+  override get message() {
+    return `Unexpected JSON shape in ${this.source}`;
+  }
 }
 
-function isArrayOf<T>(value: unknown, item: (entry: unknown) => entry is T): value is T[] {
-  return Array.isArray(value) && value.every((entry) => item(entry));
+/** A downloaded JAR does not match the SHA-256 in its build manifest. */
+export class ChecksumMismatchError extends Data.TaggedError("ChecksumMismatchError")<{
+  readonly file: string;
+}> {
+  override get message() {
+    return `SHA-256 mismatch: ${this.file}`;
+  }
 }
 
-function isString(value: unknown): value is string {
-  return typeof value === "string";
-}
+/** The release or its inputs cannot be imported as requested. */
+export class ReleaseImportError extends Data.TaggedError("ReleaseImportError")<{
+  readonly message: string;
+}> {}
 
-function isManifest(value: unknown): value is Manifest {
-  return (
-    isRecord(value) &&
-    typeof value.target === "string" &&
-    isArrayOf(
-      value.artifacts,
-      (artifact): artifact is Manifest["artifacts"][number] =>
-        isRecord(artifact) &&
-        typeof artifact.file === "string" &&
-        typeof artifact.sha256 === "string",
-    )
-  );
-}
+/** Runs the GitHub CLI and returns its trimmed standard output. */
+export class GitHubCli extends Context.Service<
+  GitHubCli,
+  { readonly run: (args: readonly string[]) => Effect.Effect<string, CommandError> }
+>()("maven/GitHubCli") {}
 
-function isReleaseRun(value: unknown): value is ReleaseRun {
-  return (
-    isRecord(value) &&
-    typeof value.databaseId === "number" &&
-    (value.headBranch === undefined || typeof value.headBranch === "string") &&
-    (value.number === undefined || typeof value.number === "number")
-  );
-}
+export const GitHubCliLive = Layer.succeed(GitHubCli, {
+  run: (args) =>
+    Effect.tryPromise({
+      try: async (signal) =>
+        execFileAsync("gh", args, { cwd: root, maxBuffer: 16 * 1024 * 1024, signal }),
+      catch: (cause) => new CommandError({ args, cause }),
+    }).pipe(Effect.map(({ stdout }) => stdout.trim())),
+});
 
-function isReleaseJob(value: unknown): value is ReleaseJob {
-  return isRecord(value) && typeof value.name === "string" && typeof value.conclusion === "string";
-}
+const ArtifactSchema = Schema.Struct({ file: Schema.String, sha256: Schema.String });
+const ManifestSchema = Schema.Struct({
+  target: Schema.String,
+  artifacts: Schema.Array(ArtifactSchema),
+});
+const ReleaseRunSchema = Schema.Struct({
+  databaseId: Schema.Int,
+  headBranch: Schema.optional(Schema.String),
+  number: Schema.optional(Schema.Int),
+});
+const ReleaseJobSchema = Schema.Struct({ name: Schema.String, conclusion: Schema.String });
+const ReleaseSchema = Schema.Struct({
+  tagName: Schema.String,
+  isDraft: Schema.Boolean,
+  isPrerelease: Schema.Boolean,
+});
 
-interface Release {
-  tagName: string;
-  isDraft: boolean;
-  isPrerelease: boolean;
-}
-
-function isRelease(value: unknown): value is Release {
-  return (
-    isRecord(value) &&
-    typeof value.tagName === "string" &&
-    typeof value.isDraft === "boolean" &&
-    typeof value.isPrerelease === "boolean"
-  );
-}
+type Artifact = typeof ArtifactSchema.Type;
+type ReleaseRun = typeof ReleaseRunSchema.Type;
+type ReleaseJob = typeof ReleaseJobSchema.Type;
 
 /** Parses JSON from a file or the GitHub CLI and checks its shape. */
-function parseJson<T>(text: string, guard: (value: unknown) => value is T, source: string): T {
-  const value: unknown = JSON.parse(text);
-  if (!guard(value)) throw new Error(`Unexpected JSON shape in ${source}`);
-  return value;
+function parseJson<S extends Schema.Decoder<unknown>>(schema: S, text: string, source: string) {
+  return Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(
+    Effect.mapError((cause) => new JsonShapeError({ source, cause })),
+  );
 }
 
-const readManifest = async (path: string) =>
-  parseJson(await readFile(path, "utf8"), isManifest, path);
+function fileOperation<A>(
+  operation: string,
+  path: string,
+  run: () => Promise<A>,
+): Effect.Effect<A, FileError> {
+  return Effect.tryPromise({
+    try: run,
+    catch: (cause) => new FileError({ operation, path, cause }),
+  });
+}
+
+const readBytes = (path: string) => fileOperation("read", path, async () => readFile(path));
+const readText = (path: string) => fileOperation("read", path, async () => readFile(path, "utf8"));
+const write = (path: string, contents: string | Buffer) =>
+  fileOperation("write", path, async () => writeFile(path, contents));
+const makeDirectory = (path: string) =>
+  fileOperation("create", path, async () => mkdir(path, { recursive: true }));
+const remove = (path: string) =>
+  fileOperation("remove", path, async () => rm(path, { recursive: true, force: true }));
+const listDirectory = (path: string) => fileOperation("list", path, async () => readdir(path));
+const exists = (path: string) =>
+  fileOperation("check", path, async () =>
+    stat(path).then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+        throw error;
+      },
+    ),
+  );
+
+const readManifest = (path: string) =>
+  readText(path).pipe(Effect.flatMap((text) => parseJson(ManifestSchema, text, path)));
+
+/** Reads a project's build manifest and returns its single fully patched artifact. */
+const readProjectArtifact = Effect.fn("readProjectArtifact")(function* (
+  directory: string,
+  project: (typeof projects)[number],
+) {
+  const manifest = yield* readManifest(join(directory, "build", project, "manifest.json"));
+  const [artifact] = manifest.artifacts;
+  if (manifest.target !== project || manifest.artifacts.length !== 1 || !artifact) {
+    return yield* new ReleaseImportError({
+      message: `Expected one fully patched artifact for ${project}`,
+    });
+  }
+  return artifact;
+});
 
 const stackDependencies = new Map([
   ["org.oryxel.cube:cubeconverter", "cubeconverter-stackanvil"],
   ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
 ]);
 
-async function run(program: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(program, args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
-  return stdout.trim();
-}
-
 function checksum(bytes: Buffer, algorithm: "sha1" | "sha256"): string {
   return createHash(algorithm).update(bytes).digest("hex");
 }
 
-async function writeChecksums(file: string, bytes?: Buffer): Promise<void> {
-  const contents = bytes ?? (await readFile(file));
+const writeChecksums = Effect.fn("writeChecksums")(function* (file: string, bytes?: Buffer) {
+  const contents = bytes ?? (yield* readBytes(file));
   for (const algorithm of ["sha1", "sha256"] as const) {
-    await writeFile(`${file}.${algorithm}`, `${checksum(contents, algorithm)}\n`);
+    yield* write(`${file}.${algorithm}`, `${checksum(contents, algorithm)}\n`);
   }
-}
+});
 
 export function rewritePom(source: string, artifactId: string, version: string): string {
   return source
@@ -137,144 +195,152 @@ export function rewritePom(source: string, artifactId: string, version: string):
     });
 }
 
-async function updateMetadata(artifactId: string): Promise<void> {
+const updateMetadata = Effect.fn("updateMetadata")(function* (artifactId: string) {
   const dir = join(site, groupPath, artifactId);
-  const versions = (await readdir(dir, { withFileTypes: true }))
+  const entries = yield* fileOperation("list", dir, async () =>
+    readdir(dir, { withFileTypes: true }),
+  );
+  const versions = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const latest = versions.at(-1)!;
-  const timestamp = new Date()
+  const latest = versions.at(-1);
+  if (latest === undefined) {
+    return yield* new ReleaseImportError({ message: `No Maven versions for ${artifactId}` });
+  }
+  const timestamp = new Date(yield* Clock.currentTimeMillis)
     .toISOString()
     .replaceAll(/[-:TZ.]/g, "")
     .slice(0, 14);
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <groupId>${group}</groupId>\n  <artifactId>${artifactId}</artifactId>\n  <versioning>\n    <latest>${latest}</latest>\n    <release>${latest}</release>\n    <versions>\n${versions.map((version) => `      <version>${version}</version>`).join("\n")}\n    </versions>\n    <lastUpdated>${timestamp}</lastUpdated>\n  </versioning>\n</metadata>\n`;
   const metadata = join(dir, "maven-metadata.xml");
-  await writeFile(metadata, xml);
-  await writeChecksums(metadata);
-}
+  yield* write(metadata, xml);
+  yield* writeChecksums(metadata);
+});
 
-export async function importJar(
+/** Writes the POM, checksums, and release download URL for one verified JAR. */
+export const importJar = Effect.fn("importJar")(function* (
   source: string,
   pomSource: string,
-  artifact: { file: string; sha256: string },
+  artifact: Artifact,
   artifactId: string,
   version: string,
   repository = site,
-): Promise<void> {
-  if (!artifact.file.endsWith("-StackAnvil.jar"))
-    throw new Error(`Unbranded JAR: ${artifact.file}`);
-  const jar = await readFile(source);
-  if (checksum(jar, "sha256") !== artifact.sha256)
-    throw new Error(`SHA-256 mismatch: ${artifact.file}`);
+) {
+  if (!artifact.file.endsWith("-StackAnvil.jar")) {
+    return yield* new ReleaseImportError({ message: `Unbranded JAR: ${artifact.file}` });
+  }
+  const jar = yield* readBytes(source);
+  if (checksum(jar, "sha256") !== artifact.sha256) {
+    return yield* new ChecksumMismatchError({ file: artifact.file });
+  }
   const versionDir = join(repository, groupPath, artifactId, version);
-  if (existsSync(versionDir))
-    throw new Error(`Release ${version} already has Maven files for ${artifactId}`);
-  await mkdir(versionDir, { recursive: true });
+  if (yield* exists(versionDir)) {
+    return yield* new ReleaseImportError({
+      message: `Release ${version} already has Maven files for ${artifactId}`,
+    });
+  }
+  yield* makeDirectory(versionDir);
   const jarFile = join(versionDir, `${artifactId}-${version}.jar`);
   const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
   const download = `https://github.com/${sourceRepository}/releases/download/stack-v${version}/${encodeURIComponent(artifact.file)}`;
-  await writeFile(`${jarFile}.url`, `${download}\n`);
-  await writeFile(pomFile, rewritePom(await readFile(pomSource, "utf8"), artifactId, version));
-  await writeChecksums(jarFile, jar);
-  await writeChecksums(pomFile);
-}
+  yield* write(`${jarFile}.url`, `${download}\n`);
+  yield* write(pomFile, rewritePom(yield* readText(pomSource), artifactId, version));
+  yield* writeChecksums(jarFile, jar);
+  yield* writeChecksums(pomFile);
+});
 
-async function importProject(tag: string, project: (typeof projects)[number]): Promise<void> {
-  const built = join(incoming, "build", project);
-  const manifest = await readManifest(join(built, "manifest.json"));
-  if (manifest.target !== project || manifest.artifacts.length !== 1) {
-    throw new Error(`Expected one fully patched artifact for ${project}`);
-  }
+const importProject = Effect.fn("importProject")(function* (
+  tag: string,
+  project: (typeof projects)[number],
+) {
+  const artifact = yield* readProjectArtifact(incoming, project);
   const version = tag.slice("stack-v".length);
-  const artifact = manifest.artifacts[0];
-  await importJar(
+  yield* importJar(
     join(incoming, "jars", artifact.file),
-    join(built, "pom.xml"),
+    join(incoming, "build", project, "pom.xml"),
     artifact,
     `${project}-stackanvil`,
     version,
   );
-  await updateMetadata(`${project}-stackanvil`);
-}
+  yield* updateMetadata(`${project}-stackanvil`);
+});
 
-export function hasPublishedRelease(jobs: ReleaseJob[]): boolean {
+export function hasPublishedRelease(jobs: readonly ReleaseJob[]): boolean {
   return ["build", "publish"].every((name) =>
     jobs.some((job) => job.name === name && job.conclusion === "success"),
   );
 }
 
-export async function findPublishedRun(
-  runs: ReleaseRun[],
-  loadJobs: (runId: number) => Promise<ReleaseJob[]>,
-): Promise<number | undefined> {
+/** Returns the first run whose build and publication jobs both succeeded. */
+export const findPublishedRun = Effect.fn("findPublishedRun")(function* <E, R>(
+  runs: readonly ReleaseRun[],
+  loadJobs: (runId: number) => Effect.Effect<readonly ReleaseJob[], E, R>,
+) {
   for (const candidate of runs) {
-    if (hasPublishedRelease(await loadJobs(candidate.databaseId))) return candidate.databaseId;
+    if (hasPublishedRelease(yield* loadJobs(candidate.databaseId))) return candidate.databaseId;
   }
   return undefined;
-}
+});
 
-async function downloadReleaseBuild(tag: string): Promise<boolean> {
-  let runs = parseJson(
-    await run("gh", [
-      "run",
-      "list",
-      "--repo",
-      sourceRepository,
-      "--workflow",
-      "release.yml",
-      "--branch",
-      tag,
-      "--event",
-      "push",
-      "--status",
-      "completed",
-      "--limit",
-      "10",
-      "--json",
-      "databaseId,headBranch",
-    ]),
-    (value) => isArrayOf(value, isReleaseRun),
-    "gh run list",
-  );
-  runs = runs.filter((entry) => entry.headBranch === tag);
+const listReleaseRuns = Effect.fn("listReleaseRuns")(function* (filter: readonly string[]) {
+  const gh = yield* GitHubCli;
+  const output = yield* gh.run([
+    "run",
+    "list",
+    "--repo",
+    sourceRepository,
+    "--workflow",
+    "release.yml",
+    ...filter,
+  ]);
+  return yield* parseJson(Schema.Array(ReleaseRunSchema), output, "gh run list");
+});
+
+/** Downloads the release build bundle. Returns false when no run published the release. */
+export const downloadReleaseBuild = Effect.fn("downloadReleaseBuild")(function* (
+  tag: string,
+  directory = incoming,
+) {
+  const gh = yield* GitHubCli;
+  let runs = (yield* listReleaseRuns([
+    "--branch",
+    tag,
+    "--event",
+    "push",
+    "--status",
+    "completed",
+    "--limit",
+    "10",
+    "--json",
+    "databaseId,headBranch",
+  ])).filter((entry) => entry.headBranch === tag);
   if (!runs.length) {
     const runNumber = /^stack-v0\.0\.(\d+)$/.exec(tag)?.[1];
     if (runNumber) {
-      const dispatched = parseJson(
-        await run("gh", [
-          "run",
-          "list",
-          "--repo",
-          sourceRepository,
-          "--workflow",
-          "release.yml",
-          "--event",
-          "workflow_dispatch",
-          "--status",
-          "completed",
-          "--limit",
-          "1000",
-          "--json",
-          "databaseId,number",
-        ]),
-        (value) => isArrayOf(value, isReleaseRun),
-        "gh run list",
-      );
+      const dispatched = yield* listReleaseRuns([
+        "--event",
+        "workflow_dispatch",
+        "--status",
+        "completed",
+        "--limit",
+        "1000",
+        "--json",
+        "databaseId,number",
+      ]);
       runs = dispatched.filter((entry) => entry.number === Number(runNumber));
     }
   }
-  const runId = await findPublishedRun(runs, async (id) => {
-    const details = parseJson(
-      await run("gh", ["run", "view", String(id), "--repo", sourceRepository, "--json", "jobs"]),
-      (value): value is { jobs: ReleaseJob[] } =>
-        isRecord(value) && isArrayOf(value.jobs, isReleaseJob),
-      "gh run view",
-    );
-    return details.jobs;
-  });
-  if (!runId) return false;
-  await run("gh", [
+  const runId = yield* findPublishedRun(runs, (id) =>
+    gh.run(["run", "view", String(id), "--repo", sourceRepository, "--json", "jobs"]).pipe(
+      Effect.flatMap((output) =>
+        parseJson(Schema.Struct({ jobs: Schema.Array(ReleaseJobSchema) }), output, "gh run view"),
+      ),
+      Effect.map(({ jobs }) => jobs),
+    ),
+  );
+  if (runId === undefined) return false;
+  yield* gh.run([
     "run",
     "download",
     String(runId),
@@ -283,23 +349,27 @@ async function downloadReleaseBuild(tag: string): Promise<boolean> {
     "--name",
     "release-bundle",
     "--dir",
-    join(incoming, "build"),
+    join(directory, "build"),
   ]);
   return true;
-}
+});
 
-async function downloadReleaseInputs(tag: string): Promise<boolean> {
-  if (!(await downloadReleaseBuild(tag))) return false;
-  await mkdir(join(incoming, "jars"), { recursive: true });
+const listJars = (directory: string) =>
+  listDirectory(directory).pipe(
+    Effect.map((files) => files.filter((file) => file.endsWith(".jar"))),
+  );
+
+const downloadReleaseInputs = Effect.fn("downloadReleaseInputs")(function* (tag: string) {
+  if (!(yield* downloadReleaseBuild(tag))) return false;
+  const gh = yield* GitHubCli;
+  const jars = join(incoming, "jars");
+  yield* makeDirectory(jars);
   const patterns: string[] = [];
   for (const project of projects) {
-    const manifest = await readManifest(join(incoming, "build", project, "manifest.json"));
-    if (manifest.target !== project || manifest.artifacts.length !== 1) {
-      throw new Error(`Expected one fully patched artifact for ${project}`);
-    }
-    patterns.push("--pattern", manifest.artifacts[0].file);
+    const artifact = yield* readProjectArtifact(incoming, project);
+    patterns.push("--pattern", artifact.file);
   }
-  await run("gh", [
+  yield* gh.run([
     "release",
     "download",
     tag,
@@ -307,44 +377,56 @@ async function downloadReleaseInputs(tag: string): Promise<boolean> {
     sourceRepository,
     ...patterns,
     "--dir",
-    join(incoming, "jars"),
+    jars,
   ]);
-  const jars = (await readdir(join(incoming, "jars"))).filter((file) => file.endsWith(".jar"));
-  if (jars.length !== projects.length)
-    throw new Error(`Expected ${projects.length} release JARs for ${tag}, found ${jars.length}`);
+  const downloaded = yield* listJars(jars);
+  if (downloaded.length !== projects.length) {
+    return yield* new ReleaseImportError({
+      message: `Expected ${projects.length} release JARs for ${tag}, found ${downloaded.length}`,
+    });
+  }
   return true;
-}
+});
 
-export async function validateReleaseInputs(directory = incoming): Promise<void> {
+/** Checks every downloaded JAR against its build manifest and rejects extra JARs. */
+export const validateReleaseInputs = Effect.fn("validateReleaseInputs")(function* (
+  directory = incoming,
+) {
   const expected = new Set<string>();
   for (const project of projects) {
-    const built = join(directory, "build", project);
-    const manifest = await readManifest(join(built, "manifest.json"));
-    if (manifest.target !== project || manifest.artifacts.length !== 1) {
-      throw new Error(`Expected one fully patched artifact for ${project}`);
+    const artifact = yield* readProjectArtifact(directory, project);
+    if (expected.has(artifact.file)) {
+      return yield* new ReleaseImportError({ message: `Duplicate release JAR: ${artifact.file}` });
     }
-    const artifact = manifest.artifacts[0];
-    if (expected.has(artifact.file)) throw new Error(`Duplicate release JAR: ${artifact.file}`);
     expected.add(artifact.file);
-    const bytes = await readFile(join(directory, "jars", artifact.file));
-    if (checksum(bytes, "sha256") !== artifact.sha256)
-      throw new Error(`SHA-256 mismatch: ${artifact.file}`);
-    await readFile(join(built, "pom.xml"));
+    const bytes = yield* readBytes(join(directory, "jars", artifact.file));
+    if (checksum(bytes, "sha256") !== artifact.sha256) {
+      return yield* new ChecksumMismatchError({ file: artifact.file });
+    }
+    yield* readBytes(join(directory, "build", project, "pom.xml"));
   }
-  const actual = (await readdir(join(directory, "jars"))).filter((file) => file.endsWith(".jar"));
-  const unexpected = actual.find((file) => !expected.has(file));
-  if (unexpected) throw new Error(`Unexpected release JAR: ${unexpected}`);
-}
+  const unexpected = (yield* listJars(join(directory, "jars"))).find((file) => !expected.has(file));
+  if (unexpected) {
+    return yield* new ReleaseImportError({ message: `Unexpected release JAR: ${unexpected}` });
+  }
+});
 
-async function main(): Promise<void> {
-  const requestedTag = process.argv[2] || undefined;
-  if (requestedTag && !/^stack-v\d+\.\d+\.\d+$/.test(requestedTag))
-    throw new Error(`Invalid release tag: ${requestedTag}`);
-  const imported = existsSync(stateFile)
-    ? parseJson(await readFile(stateFile, "utf8"), (value) => isArrayOf(value, isString), stateFile)
+const RequestedTagSchema = Schema.UndefinedOr(Schema.String.check(Schema.isPattern(releaseTag)));
+
+/** Imports every new release, or only `requestedTag` when it is set. */
+export const importReleases = Effect.fn("importReleases")(function* (requestedTag?: string) {
+  const tagFilter = yield* Schema.decodeEffect(RequestedTagSchema)(requestedTag).pipe(
+    Effect.mapError(
+      () => new ReleaseImportError({ message: `Invalid release tag: ${requestedTag}` }),
+    ),
+  );
+  const imported = (yield* exists(stateFile))
+    ? [...(yield* parseJson(Schema.Array(Schema.String), yield* readText(stateFile), stateFile))]
     : [];
-  const releases = parseJson(
-    await run("gh", [
+  const gh = yield* GitHubCli;
+  const releases = yield* parseJson(
+    Schema.Array(ReleaseSchema),
+    yield* gh.run([
       "release",
       "list",
       "--repo",
@@ -356,36 +438,35 @@ async function main(): Promise<void> {
       "--json",
       "tagName,isDraft,isPrerelease",
     ]),
-    (value) => isArrayOf(value, isRelease),
     "gh release list",
   );
   for (const release of releases) {
     const tag = release.tagName;
-    if (requestedTag && tag !== requestedTag) continue;
-    if (
-      release.isDraft ||
-      release.isPrerelease ||
-      !/^stack-v\d+\.\d+\.\d+$/.test(tag) ||
-      imported.includes(tag)
-    )
+    if (tagFilter && tag !== tagFilter) continue;
+    if (release.isDraft || release.isPrerelease || !releaseTag.test(tag) || imported.includes(tag))
       continue;
-    await rm(incoming, { recursive: true, force: true });
-    await mkdir(incoming, { recursive: true });
-    if (!(await downloadReleaseInputs(tag))) {
-      process.stderr.write(
-        `Skipping ${tag}: no completed build and release publication; retrying on the next import\n`,
+    yield* remove(incoming);
+    yield* makeDirectory(incoming);
+    if (!(yield* downloadReleaseInputs(tag))) {
+      yield* Console.error(
+        `Skipping ${tag}: no completed build and release publication; retrying on the next import`,
       );
       continue;
     }
-    await validateReleaseInputs();
-    for (const project of projects) await importProject(tag, project);
+    yield* validateReleaseInputs();
+    for (const project of projects) yield* importProject(tag, project);
     imported.push(tag);
-    await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
-    process.stdout.write(`Imported ${tag}\n`);
+    yield* write(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
+    yield* Console.log(`Imported ${tag}`);
   }
-  if (requestedTag && !imported.includes(requestedTag))
-    throw new Error(`Release was not imported: ${requestedTag}`);
-  await rm(incoming, { recursive: true, force: true });
-}
+  if (tagFilter && !imported.includes(tagFilter)) {
+    return yield* new ReleaseImportError({ message: `Release was not imported: ${tagFilter}` });
+  }
+  yield* remove(incoming);
+});
 
-if (import.meta.main) await main();
+if (import.meta.main) {
+  await Effect.runPromise(
+    importReleases(process.argv[2] || undefined).pipe(Effect.provide(GitHubCliLive)),
+  );
+}
