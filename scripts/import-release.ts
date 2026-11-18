@@ -466,7 +466,11 @@ export const importReleases = Effect.fn("importReleases")(function* (requestedTa
 });
 
 if (import.meta.main) {
+  // The workflow passes an empty string when no tag input is set.
+  const tagArgument = process.argv[2];
   await Effect.runPromise(
-    importReleases(process.argv[2] || undefined).pipe(Effect.provide(GitHubCliLive)),
+    importReleases(tagArgument === "" ? undefined : tagArgument).pipe(
+      Effect.provide(GitHubCliLive),
+    ),
   );
 }
