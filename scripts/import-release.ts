@@ -31,6 +31,70 @@ interface ReleaseJob {
   conclusion: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isArrayOf<T>(value: unknown, item: (entry: unknown) => entry is T): value is T[] {
+  return Array.isArray(value) && value.every((entry) => item(entry));
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isManifest(value: unknown): value is Manifest {
+  return (
+    isRecord(value) &&
+    typeof value.target === "string" &&
+    isArrayOf(
+      value.artifacts,
+      (artifact): artifact is Manifest["artifacts"][number] =>
+        isRecord(artifact) &&
+        typeof artifact.file === "string" &&
+        typeof artifact.sha256 === "string",
+    )
+  );
+}
+
+function isReleaseRun(value: unknown): value is ReleaseRun {
+  return (
+    isRecord(value) &&
+    typeof value.databaseId === "number" &&
+    (value.headBranch === undefined || typeof value.headBranch === "string") &&
+    (value.number === undefined || typeof value.number === "number")
+  );
+}
+
+function isReleaseJob(value: unknown): value is ReleaseJob {
+  return isRecord(value) && typeof value.name === "string" && typeof value.conclusion === "string";
+}
+
+interface Release {
+  tagName: string;
+  isDraft: boolean;
+  isPrerelease: boolean;
+}
+
+function isRelease(value: unknown): value is Release {
+  return (
+    isRecord(value) &&
+    typeof value.tagName === "string" &&
+    typeof value.isDraft === "boolean" &&
+    typeof value.isPrerelease === "boolean"
+  );
+}
+
+/** Parses JSON from a file or the GitHub CLI and checks its shape. */
+function parseJson<T>(text: string, guard: (value: unknown) => value is T, source: string): T {
+  const value: unknown = JSON.parse(text);
+  if (!guard(value)) throw new Error(`Unexpected JSON shape in ${source}`);
+  return value;
+}
+
+const readManifest = async (path: string) =>
+  parseJson(await readFile(path, "utf8"), isManifest, path);
+
 const stackDependencies = new Map([
   ["org.oryxel.cube:cubeconverter", "cubeconverter-stackanvil"],
   ["net.raphimc:ViaBedrock", "viabedrock-stackanvil"],
@@ -118,7 +182,7 @@ export async function importJar(
 
 async function importProject(tag: string, project: (typeof projects)[number]): Promise<void> {
   const built = join(incoming, "build", project);
-  const manifest = JSON.parse(await readFile(join(built, "manifest.json"), "utf8")) as Manifest;
+  const manifest = await readManifest(join(built, "manifest.json"));
   if (manifest.target !== project || manifest.artifacts.length !== 1) {
     throw new Error(`Expected one fully patched artifact for ${project}`);
   }
@@ -151,7 +215,7 @@ export async function findPublishedRun(
 }
 
 async function downloadReleaseBuild(tag: string): Promise<boolean> {
-  let runs = JSON.parse(
+  let runs = parseJson(
     await run("gh", [
       "run",
       "list",
@@ -170,12 +234,14 @@ async function downloadReleaseBuild(tag: string): Promise<boolean> {
       "--json",
       "databaseId,headBranch",
     ]),
-  ) as ReleaseRun[];
+    (value) => isArrayOf(value, isReleaseRun),
+    "gh run list",
+  );
   runs = runs.filter((entry) => entry.headBranch === tag);
   if (!runs.length) {
     const runNumber = /^stack-v0\.0\.(\d+)$/.exec(tag)?.[1];
     if (runNumber) {
-      const dispatched = JSON.parse(
+      const dispatched = parseJson(
         await run("gh", [
           "run",
           "list",
@@ -192,14 +258,19 @@ async function downloadReleaseBuild(tag: string): Promise<boolean> {
           "--json",
           "databaseId,number",
         ]),
-      ) as ReleaseRun[];
+        (value) => isArrayOf(value, isReleaseRun),
+        "gh run list",
+      );
       runs = dispatched.filter((entry) => entry.number === Number(runNumber));
     }
   }
   const runId = await findPublishedRun(runs, async (id) => {
-    const details = JSON.parse(
+    const details = parseJson(
       await run("gh", ["run", "view", String(id), "--repo", sourceRepository, "--json", "jobs"]),
-    ) as { jobs: ReleaseJob[] };
+      (value): value is { jobs: ReleaseJob[] } =>
+        isRecord(value) && isArrayOf(value.jobs, isReleaseJob),
+      "gh run view",
+    );
     return details.jobs;
   });
   if (!runId) return false;
@@ -222,9 +293,7 @@ async function downloadReleaseInputs(tag: string): Promise<boolean> {
   await mkdir(join(incoming, "jars"), { recursive: true });
   const patterns: string[] = [];
   for (const project of projects) {
-    const manifest = JSON.parse(
-      await readFile(join(incoming, "build", project, "manifest.json"), "utf8"),
-    ) as Manifest;
+    const manifest = await readManifest(join(incoming, "build", project, "manifest.json"));
     if (manifest.target !== project || manifest.artifacts.length !== 1) {
       throw new Error(`Expected one fully patched artifact for ${project}`);
     }
@@ -250,7 +319,7 @@ export async function validateReleaseInputs(directory = incoming): Promise<void>
   const expected = new Set<string>();
   for (const project of projects) {
     const built = join(directory, "build", project);
-    const manifest = JSON.parse(await readFile(join(built, "manifest.json"), "utf8")) as Manifest;
+    const manifest = await readManifest(join(built, "manifest.json"));
     if (manifest.target !== project || manifest.artifacts.length !== 1) {
       throw new Error(`Expected one fully patched artifact for ${project}`);
     }
@@ -272,9 +341,9 @@ async function main(): Promise<void> {
   if (requestedTag && !/^stack-v\d+\.\d+\.\d+$/.test(requestedTag))
     throw new Error(`Invalid release tag: ${requestedTag}`);
   const imported = existsSync(stateFile)
-    ? (JSON.parse(await readFile(stateFile, "utf8")) as string[])
+    ? parseJson(await readFile(stateFile, "utf8"), (value) => isArrayOf(value, isString), stateFile)
     : [];
-  const releases = JSON.parse(
+  const releases = parseJson(
     await run("gh", [
       "release",
       "list",
@@ -287,7 +356,9 @@ async function main(): Promise<void> {
       "--json",
       "tagName,isDraft,isPrerelease",
     ]),
-  ) as { tagName: string; isDraft: boolean; isPrerelease: boolean }[];
+    (value) => isArrayOf(value, isRelease),
+    "gh release list",
+  );
   for (const release of releases) {
     const tag = release.tagName;
     if (requestedTag && tag !== requestedTag) continue;
@@ -301,8 +372,8 @@ async function main(): Promise<void> {
     await rm(incoming, { recursive: true, force: true });
     await mkdir(incoming, { recursive: true });
     if (!(await downloadReleaseInputs(tag))) {
-      console.warn(
-        `Skipping ${tag}: no completed build and release publication; retrying on the next import`,
+      process.stderr.write(
+        `Skipping ${tag}: no completed build and release publication; retrying on the next import\n`,
       );
       continue;
     }
@@ -310,7 +381,7 @@ async function main(): Promise<void> {
     for (const project of projects) await importProject(tag, project);
     imported.push(tag);
     await writeFile(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
-    console.log(`Imported ${tag}`);
+    process.stdout.write(`Imported ${tag}\n`);
   }
   if (requestedTag && !imported.includes(requestedTag))
     throw new Error(`Release was not imported: ${requestedTag}`);
