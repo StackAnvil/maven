@@ -61,7 +61,7 @@ export function rewritePom(source: string, artifactId: string, version: string):
     .replace(/<groupId>[^<]+<\/groupId>/, `<groupId>${group}</groupId>`)
     .replace(/<artifactId>[^<]+<\/artifactId>/, `<artifactId>${artifactId}</artifactId>`)
     .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`)
-    .replace(/<dependency>([\s\S]*?)<\/dependency>/g, (dependency) => {
+    .replaceAll(/<dependency>([\s\S]*?)<\/dependency>/g, (dependency) => {
       const oldGroup = /<groupId>([^<]+)<\/groupId>/.exec(dependency)?.[1];
       const oldArtifact = /<artifactId>([^<]+)<\/artifactId>/.exec(dependency)?.[1];
       const replacement = stackDependencies.get(`${oldGroup}:${oldArtifact}`);
@@ -82,7 +82,7 @@ async function updateMetadata(artifactId: string): Promise<void> {
   const latest = versions.at(-1)!;
   const timestamp = new Date()
     .toISOString()
-    .replace(/[-:TZ.]/g, "")
+    .replaceAll(/[-:TZ.]/g, "")
     .slice(0, 14);
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <groupId>${group}</groupId>\n  <artifactId>${artifactId}</artifactId>\n  <versioning>\n    <latest>${latest}</latest>\n    <release>${latest}</release>\n    <versions>\n${versions.map((version) => `      <version>${version}</version>`).join("\n")}\n    </versions>\n    <lastUpdated>${timestamp}</lastUpdated>\n  </versioning>\n</metadata>\n`;
   const metadata = join(dir, "maven-metadata.xml");
