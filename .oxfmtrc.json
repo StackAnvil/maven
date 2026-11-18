@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "sortImports": true,
+  "ignorePatterns": [
+    "site/**",
+    ".incoming/**",
+    ".cloudflare/**",
+    "dist/**",
+    "bun.lock",
+    "imported-releases.json"
+  ]
+}
