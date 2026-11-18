@@ -3,8 +3,8 @@
   <groupId>io.github.stackanvil</groupId>
   <artifactId>viafabricplus-bedrock-stackanvil</artifactId>
   <versioning>
-    <latest>0.5.2</latest>
-    <release>0.5.2</release>
+    <latest>0.5.3</latest>
+    <release>0.5.3</release>
     <versions>
       <version>0.0.7</version>
       <version>0.1.0</version>
@@ -119,7 +119,8 @@
       <version>0.5.0</version>
       <version>0.5.1</version>
       <version>0.5.2</version>
+      <version>0.5.3</version>
     </versions>
-    <lastUpdated>20261118140524</lastUpdated>
+    <lastUpdated>20261118220000</lastUpdated>
   </versioning>
 </metadata>
