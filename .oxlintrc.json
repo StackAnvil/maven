@@ -8,6 +8,8 @@
   },
   "options": {
     "typeAware": true,
+    "typeCheck": false,
+    "denyWarnings": true,
     "reportUnusedDisableDirectives": "error"
   },
   "env": {
@@ -16,7 +18,6 @@
   },
   "ignorePatterns": ["site/**", ".incoming/**", ".cloudflare/**", "dist/**"],
   "rules": {
-    "typescript/no-unsafe-type-assertion": "off",
     "typescript/restrict-plus-operands": "error",
     "typescript/prefer-promise-reject-errors": "error",
     "typescript/return-await": "error",
@@ -49,14 +50,18 @@
     "unicorn/prefer-at": "error",
     "unicorn/prefer-string-replace-all": "error",
     "unicorn/prefer-node-protocol": "error",
-    "unicorn/prefer-top-level-await": "error"
-  },
-  "overrides": [
-    {
-      "files": ["scripts/**"],
-      "rules": {
-        "eslint/no-console": "off"
+    "unicorn/prefer-top-level-await": "error",
+    "unicorn/no-abusive-eslint-disable": "error",
+    "typescript/ban-ts-comment": [
+      "error",
+      {
+        "ts-expect-error": "allow-with-description",
+        "ts-ignore": true,
+        "ts-nocheck": true,
+        "ts-check": false,
+        "minimumDescriptionLength": 10
       }
-    }
-  ]
+    ],
+    "typescript/prefer-ts-expect-error": "error"
+  }
 }
