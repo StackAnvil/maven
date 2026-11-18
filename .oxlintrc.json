@@ -3,7 +3,8 @@
   "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],
   "categories": {
     "correctness": "error",
-    "suspicious": "error"
+    "suspicious": "error",
+    "perf": "error"
   },
   "options": {
     "typeAware": true,
@@ -15,6 +16,47 @@
   },
   "ignorePatterns": ["site/**", ".incoming/**", ".cloudflare/**", "dist/**"],
   "rules": {
-    "typescript/no-unsafe-type-assertion": "off"
-  }
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/restrict-plus-operands": "error",
+    "typescript/prefer-promise-reject-errors": "error",
+    "typescript/return-await": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/prefer-optional-chain": "error",
+    "typescript/only-throw-error": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/consistent-type-exports": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-explicit-any": "error",
+    "eslint/array-callback-return": "error",
+    "eslint/no-throw-literal": "error",
+    "eslint/no-self-compare": "error",
+    "eslint/no-fallthrough": "error",
+    "eslint/no-loop-func": "error",
+    "eslint/no-promise-executor-return": "error",
+    "eslint/eqeqeq": [
+      "error",
+      "always",
+      {
+        "null": "ignore"
+      }
+    ],
+    "eslint/no-console": "error",
+    "eslint/no-await-in-loop": "off",
+    "import/no-duplicates": "error",
+    "import/no-cycle": "error",
+    "promise/catch-or-return": "error",
+    "unicorn/prefer-at": "error",
+    "unicorn/prefer-string-replace-all": "error",
+    "unicorn/prefer-node-protocol": "error",
+    "unicorn/prefer-top-level-await": "error"
+  },
+  "overrides": [
+    {
+      "files": ["scripts/**"],
+      "rules": {
+        "eslint/no-console": "off"
+      }
+    }
+  ]
 }
