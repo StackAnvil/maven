@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Clock, Console, Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Console, Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 
 const root = join(import.meta.dir, "..");
 const site = join(root, "site");
@@ -20,49 +20,69 @@ function describe(cause: unknown): string {
 }
 
 /** A `gh` command failed or could not start. */
-export class CommandError extends Data.TaggedError("CommandError")<{
-  readonly args: readonly string[];
-  readonly cause: unknown;
-}> {
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class CommandError extends Schema.TaggedError<
+  CommandError,
+  { readonly brand: unique symbol }
+>()("CommandError", {
+  args: Schema.Array(Schema.String),
+  cause: Schema.Unknown,
+}) {
   override get message() {
     return describe(this.cause);
   }
 }
 
 /** A file system operation failed. */
-export class FileError extends Data.TaggedError("FileError")<{
-  readonly operation: string;
-  readonly path: string;
-  readonly cause: unknown;
-}> {
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class FileError extends Schema.TaggedError<FileError, { readonly brand: unique symbol }>()(
+  "FileError",
+  {
+    operation: Schema.String,
+    path: Schema.String,
+    cause: Schema.Unknown,
+  },
+) {
   override get message() {
     return `Could not ${this.operation} ${this.path}: ${describe(this.cause)}`;
   }
 }
 
 /** A file or `gh` response is not valid JSON or has an unexpected shape. */
-export class JsonShapeError extends Data.TaggedError("JsonShapeError")<{
-  readonly source: string;
-  readonly cause: unknown;
-}> {
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class JsonShapeError extends Schema.TaggedError<
+  JsonShapeError,
+  { readonly brand: unique symbol }
+>()("JsonShapeError", {
+  source: Schema.String,
+  cause: Schema.Unknown,
+}) {
   override get message() {
     return `Unexpected JSON shape in ${this.source}`;
   }
 }
 
 /** A downloaded JAR does not match the SHA-256 in its build manifest. */
-export class ChecksumMismatchError extends Data.TaggedError("ChecksumMismatchError")<{
-  readonly file: string;
-}> {
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class ChecksumMismatchError extends Schema.TaggedError<
+  ChecksumMismatchError,
+  { readonly brand: unique symbol }
+>()("ChecksumMismatchError", {
+  file: Schema.String,
+}) {
   override get message() {
     return `SHA-256 mismatch: ${this.file}`;
   }
 }
 
 /** The release or its inputs cannot be imported as requested. */
-export class ReleaseImportError extends Data.TaggedError("ReleaseImportError")<{
-  readonly message: string;
-}> {}
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class ReleaseImportError extends Schema.TaggedError<
+  ReleaseImportError,
+  { readonly brand: unique symbol }
+>()("ReleaseImportError", {
+  message: Schema.String,
+}) {}
 
 /** Runs the GitHub CLI and returns its trimmed standard output. */
 export class GitHubCli extends Context.Service<
@@ -213,8 +233,8 @@ const updateMetadata = Effect.fn("updateMetadata")(function* (artifactId: string
   if (latest === undefined) {
     return yield* new ReleaseImportError({ message: `No Maven versions for ${artifactId}` });
   }
-  const timestamp = new Date(yield* Clock.currentTimeMillis)
-    .toISOString()
+  const now = yield* DateTime.now;
+  const timestamp = DateTime.formatIso(now)
     .replaceAll(/[-:TZ.]/gu, "")
     .slice(0, 14);
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <groupId>${group}</groupId>\n  <artifactId>${artifactId}</artifactId>\n  <versioning>\n    <latest>${latest}</latest>\n    <release>${latest}</release>\n    <versions>\n${versions.map((version) => `      <version>${version}</version>`).join("\n")}\n    </versions>\n    <lastUpdated>${timestamp}</lastUpdated>\n  </versioning>\n</metadata>\n`;
@@ -250,7 +270,8 @@ export const importJar = Effect.fn("importJar")(function* (
   const pomFile = join(versionDir, `${artifactId}-${version}.pom`);
   const download = `https://github.com/${sourceRepository}/releases/download/stack-v${version}/${encodeURIComponent(artifact.file)}`;
   yield* write(`${jarFile}.url`, `${download}\n`);
-  yield* write(pomFile, rewritePom(yield* readText(pomSource), artifactId, version));
+  const pom = yield* readText(pomSource);
+  yield* write(pomFile, rewritePom(pom, artifactId, version));
   yield* writeChecksums(jarFile, jar);
   yield* writeChecksums(pomFile);
 });
@@ -283,8 +304,8 @@ export const findPublishedRun = Effect.fn("findPublishedRun")(function* <E, R>(
   loadJobs: (runId: number) => Effect.Effect<readonly ReleaseJob[], E, R>,
 ) {
   for (const candidate of runs) {
-    if (hasPublishedRelease(yield* loadJobs(candidate.databaseId)))
-      return Option.some(candidate.databaseId);
+    const jobs = yield* loadJobs(candidate.databaseId);
+    if (hasPublishedRelease(jobs)) return Option.some(candidate.databaseId);
   }
   return Option.none();
 });
@@ -417,6 +438,8 @@ export const validateReleaseInputs = Effect.fn("validateReleaseInputs")(function
   }
 });
 
+const ImportStateSchema = Schema.Array(Schema.String);
+const encodeImportState = Schema.encodeSync(Schema.fromJsonString(ImportStateSchema, { space: 2 }));
 const RequestedTagSchema = Schema.UndefinedOr(Schema.String.check(Schema.isPattern(releaseTag)));
 
 /** Imports every new release, or only `requestedTag` when it is set. */
@@ -426,26 +449,25 @@ export const importReleases = Effect.fn("importReleases")(function* (requestedTa
       () => new ReleaseImportError({ message: `Invalid release tag: ${requestedTag}` }),
     ),
   );
-  const imported = (yield* exists(stateFile))
-    ? [...(yield* parseJson(Schema.Array(Schema.String), yield* readText(stateFile), stateFile))]
-    : [];
+  let imported: string[] = [];
+  if (yield* exists(stateFile)) {
+    const state = yield* readText(stateFile);
+    imported = [...(yield* parseJson(ImportStateSchema, state, stateFile))];
+  }
   const gh = yield* GitHubCli;
-  const releases = yield* parseJson(
-    Schema.Array(ReleaseSchema),
-    yield* gh.run([
-      "release",
-      "list",
-      "--repo",
-      sourceRepository,
-      "--order",
-      "asc",
-      "--limit",
-      "1000",
-      "--json",
-      "tagName,isDraft,isPrerelease",
-    ]),
-    "gh release list",
-  );
+  const output = yield* gh.run([
+    "release",
+    "list",
+    "--repo",
+    sourceRepository,
+    "--order",
+    "asc",
+    "--limit",
+    "1000",
+    "--json",
+    "tagName,isDraft,isPrerelease",
+  ]);
+  const releases = yield* parseJson(Schema.Array(ReleaseSchema), output, "gh release list");
   for (const release of releases) {
     const tag = release.tagName;
     if (tagFilter && tag !== tagFilter) continue;
@@ -462,7 +484,7 @@ export const importReleases = Effect.fn("importReleases")(function* (requestedTa
     yield* validateReleaseInputs();
     for (const project of projects) yield* importProject(tag, project);
     imported.push(tag);
-    yield* write(stateFile, `${JSON.stringify(imported, null, 2)}\n`);
+    yield* write(stateFile, `${encodeImportState(imported)}\n`);
     yield* Console.log(`Imported ${tag}`);
   }
   if (tagFilter && !imported.includes(tagFilter)) {

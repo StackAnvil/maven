@@ -1,13 +1,17 @@
-import { Context, Data, Effect, Option, Result } from "effect";
+import { Context, Effect, Option, Result, Schema } from "effect";
 
 const metadataRoot = "https://raw.githubusercontent.com/StackAnvil/maven/main/site";
 const releaseRoot = "https://github.com/StackAnvil/patches/releases/download/";
 
 /** A fetch to the metadata host or the origin failed before it returned a response. */
-export class FetchError extends Data.TaggedError("FetchError")<{
-  readonly url: string;
-  readonly cause: unknown;
-}> {}
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class FetchError extends Schema.TaggedError<FetchError, { readonly brand: unique symbol }>()(
+  "FetchError",
+  {
+    url: Schema.String,
+    cause: Schema.Unknown,
+  },
+) {}
 
 /** Sends HTTP requests. Tests replace it with a fake origin. */
 export class Fetcher extends Context.Service<
@@ -29,10 +33,14 @@ export function makeFetcher(
 }
 
 /** The metadata host answered with an error status. */
-export class MetadataStatusError extends Data.TaggedError("MetadataStatusError")<{
-  readonly url: string;
-  readonly status: number;
-}> {}
+// oxlint-disable-next-line unicorn/throw-new-error -- Schema.TaggedError is a class factory.
+export class MetadataStatusError extends Schema.TaggedError<
+  MetadataStatusError,
+  { readonly brand: unique symbol }
+>()("MetadataStatusError", {
+  url: Schema.String,
+  status: Schema.Finite,
+}) {}
 
 /** Reads a JAR's `.url` file. Returns `None` when the JAR has no such file. */
 const readDownloadLocation = Effect.fn("readDownloadLocation")(function* (url: string) {
