@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 
 import {
   ChecksumMismatchError,
@@ -24,13 +24,13 @@ async function failureOf<A, E>(program: Effect.Effect<A, E>): Promise<E> {
 }
 
 /** Answers `gh` commands with `respond` and records every call. */
-function fakeGitHub(respond: (args: readonly string[]) => string | undefined) {
+function fakeGitHub(respond: (args: readonly string[]) => string | null) {
   const calls: string[] = [];
   const provide = Effect.provideService(GitHubCli, {
     run: (args) => {
       calls.push(args.join(" "));
       const output = respond(args);
-      return output === undefined
+      return output === null
         ? Effect.fail(new CommandError({ args, cause: new Error("API unavailable") }))
         : Effect.succeed(output);
     },
@@ -50,14 +50,14 @@ const published = [
 test("a cancelled release does not prevent selection of a published run", async () => {
   expect(
     await Effect.runPromise(findPublishedRun([{ databaseId: 1 }], () => Effect.succeed(cancelled))),
-  ).toBeUndefined();
+  ).toEqual(Option.none());
   expect(
     await Effect.runPromise(
       findPublishedRun([{ databaseId: 1 }, { databaseId: 2 }], (id) =>
         Effect.succeed(id === 1 ? cancelled : published),
       ),
     ),
-  ).toBe(2);
+  ).toEqual(Option.some(2));
   const error = await failureOf(
     findPublishedRun([{ databaseId: 1 }], () =>
       Effect.fail(new CommandError({ args: [], cause: new Error("API unavailable") })),
@@ -77,7 +77,7 @@ test("the import downloads the bundle of the first published release run", async
     if (args.slice(0, 2).join(" ") === "run view")
       return JSON.stringify({ jobs: args[2] === "7" ? cancelled : published });
     if (args.slice(0, 2).join(" ") === "run download") return "";
-    return undefined;
+    return null;
   });
   expect(
     await Effect.runPromise(downloadReleaseBuild("stack-v1.0.0", "/incoming").pipe(gh.provide)),
@@ -97,7 +97,7 @@ test("an early release falls back to its dispatched run number", async () => {
       ]);
     if (args[1] === "view") return JSON.stringify({ jobs: args[2] === "50" ? published : [] });
     if (args[1] === "download") return "";
-    return undefined;
+    return null;
   });
   expect(
     await Effect.runPromise(downloadReleaseBuild("stack-v0.0.5", "/incoming").pipe(gh.provide)),
@@ -109,7 +109,7 @@ test("a release without a published run is skipped without a download", async ()
   const gh = fakeGitHub((args) => {
     if (args[1] === "list") return JSON.stringify([{ databaseId: 3, headBranch: "stack-v1.0.0" }]);
     if (args[1] === "view") return JSON.stringify({ jobs: cancelled });
-    return undefined;
+    return null;
   });
   expect(await Effect.runPromise(downloadReleaseBuild("stack-v1.0.0").pipe(gh.provide))).toBe(
     false,

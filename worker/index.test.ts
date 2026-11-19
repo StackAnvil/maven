@@ -20,7 +20,7 @@ const download =
 
 test("GET and HEAD redirect to the verified release asset", async () => {
   for (const method of ["GET", "HEAD"]) {
-    const response = await handle(new Request(jarUrl, { method }), async (input) => {
+    const response = await handle(new Request(jarUrl, { method }), (input) => {
       expect(input).toBe(
         "https://raw.githubusercontent.com/StackAnvil/maven/main/site/io/github/stackanvil/viafabricplus-bedrock-stackanvil/0.4.4/viafabricplus-bedrock-stackanvil-0.4.4.jar.url",
       );
@@ -34,7 +34,7 @@ test("GET and HEAD redirect to the verified release asset", async () => {
 
 test("legacy JARs fall back to GitHub Pages", async () => {
   const request = new Request(jarUrl.replaceAll("0.4.4", "0.3.4"));
-  const response = await handle(request, async (input) =>
+  const response = await handle(request, (input) =>
     Promise.resolve(
       input === request ? new Response("legacy JAR") : new Response(null, { status: 404 }),
     ),
@@ -49,27 +49,20 @@ test("metadata errors and unexpected download URLs do not redirect", async () =>
     `${download}/extra`,
   ]) {
     expect(
-      (await handle(new Request(jarUrl), async () => Promise.resolve(new Response(location))))
-        .status,
+      (await handle(new Request(jarUrl), () => Promise.resolve(new Response(location)))).status,
     ).toBe(502);
   }
   expect(
-    (
-      await handle(new Request(jarUrl), async () =>
-        Promise.resolve(new Response(null, { status: 500 })),
-      )
-    ).status,
+    (await handle(new Request(jarUrl), () => Promise.resolve(new Response(null, { status: 500 }))))
+      .status,
+  ).toBe(503);
+  expect(
+    (await handle(new Request(jarUrl), () => Promise.reject(new Error("network unavailable"))))
+      .status,
   ).toBe(503);
   expect(
     (
-      await handle(new Request(jarUrl), async () =>
-        Promise.reject(new Error("network unavailable")),
-      )
-    ).status,
-  ).toBe(503);
-  expect(
-    (
-      await handle(new Request(jarUrl, { method: "POST" }), async () =>
+      await handle(new Request(jarUrl, { method: "POST" }), () =>
         Promise.reject(new Error("unexpected fetch")),
       )
     ).status,
@@ -77,9 +70,9 @@ test("metadata errors and unexpected download URLs do not redirect", async () =>
 });
 
 test("origin failures still fail the request", async () => {
-  const request = new Request(jarUrl.replace(/\.jar$/, ".pom"));
+  const request = new Request(jarUrl.replace(/\.jar$/u, ".pom"));
   expect(
-    await handle(request, async () => Promise.reject(new Error("origin unavailable"))).then(
+    await handle(request, () => Promise.reject(new Error("origin unavailable"))).then(
       () => "resolved",
       (error: unknown) => (error instanceof Error ? error.name : "unknown"),
     ),
@@ -87,11 +80,11 @@ test("origin failures still fail the request", async () => {
 });
 
 test("POMs and checksums pass through to the origin", async () => {
-  for (const url of [jarUrl.replace(/\.jar$/, ".pom"), `${jarUrl}.sha256`]) {
+  for (const url of [jarUrl.replace(/\.jar$/u, ".pom"), `${jarUrl}.sha256`]) {
     const request = new Request(url);
     expect(
       await (
-        await handle(request, async (input) => {
+        await handle(request, (input) => {
           expect(input).toBe(request);
           return Promise.resolve(new Response("origin metadata"));
         })

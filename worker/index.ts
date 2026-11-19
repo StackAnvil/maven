@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Result } from "effect";
+import { Context, Data, Effect, Option, Result } from "effect";
 
 const metadataRoot = "https://raw.githubusercontent.com/StackAnvil/maven/main/site";
 const releaseRoot = "https://github.com/StackAnvil/patches/releases/download/";
@@ -34,17 +34,17 @@ export class MetadataStatusError extends Data.TaggedError("MetadataStatusError")
   readonly status: number;
 }> {}
 
-/** Reads a JAR's `.url` file. Returns undefined when the JAR has no such file. */
+/** Reads a JAR's `.url` file. Returns `None` when the JAR has no such file. */
 const readDownloadLocation = Effect.fn("readDownloadLocation")(function* (url: string) {
   const fetcher = yield* Fetcher;
   const metadata = yield* fetcher.fetch(url);
-  if (metadata.status === 404) return undefined;
+  if (metadata.status === 404) return Option.none();
   if (!metadata.ok) return yield* new MetadataStatusError({ url, status: metadata.status });
   const text = yield* Effect.tryPromise({
     try: async () => metadata.text(),
     catch: (cause) => new FetchError({ url, cause }),
   });
-  return text.trim();
+  return Option.some(text.trim());
 });
 
 /** Redirects release JAR requests to the verified GitHub release asset. */
@@ -59,16 +59,17 @@ export const handleRequest = Effect.fn("handleRequest")(function* (request: Requ
   const location = yield* Effect.result(readDownloadLocation(`${metadataRoot}${url.pathname}.url`));
   if (Result.isFailure(location))
     return new Response("Artifact metadata is unavailable", { status: 503 });
-  if (location.success === undefined) return yield* fetcher.fetch(request);
+  if (Option.isNone(location.success)) return yield* fetcher.fetch(request);
+  const download = location.success.value;
   if (
-    !location.success.startsWith(releaseRoot) ||
-    !/^stack-v\d+\.\d+\.\d+\/[^/?#]+\.jar$/.test(location.success.slice(releaseRoot.length))
+    !download.startsWith(releaseRoot) ||
+    !/^stack-v\d+\.\d+\.\d+\/[^/?#]+\.jar$/u.test(download.slice(releaseRoot.length))
   ) {
     return new Response("Invalid artifact download URL", { status: 502 });
   }
   return new Response(null, {
     status: 302,
-    headers: { Location: location.success, "Cache-Control": "public, max-age=3600" },
+    headers: { Location: download, "Cache-Control": "public, max-age=3600" },
   });
 });
 

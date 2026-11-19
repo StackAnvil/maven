@@ -2,11 +2,9 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
-import { Clock, Console, Context, Data, Effect, Layer, Schema } from "effect";
+import { Clock, Console, Context, Data, Effect, Layer, Option, Schema } from "effect";
 
-const execFileAsync = promisify(execFile);
 const root = join(import.meta.dir, "..");
 const site = join(root, "site");
 const incoming = join(root, ".incoming");
@@ -15,7 +13,7 @@ const sourceRepository = "StackAnvil/patches";
 const group = "io.github.stackanvil";
 const groupPath = "io/github/stackanvil";
 const stateFile = join(root, "imported-releases.json");
-const releaseTag = /^stack-v\d+\.\d+\.\d+$/;
+const releaseTag = /^stack-v\d+\.\d+\.\d+$/u;
 
 function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -74,11 +72,18 @@ export class GitHubCli extends Context.Service<
 
 export const GitHubCliLive = Layer.succeed(GitHubCli, {
   run: (args) =>
-    Effect.tryPromise({
-      try: async (signal) =>
-        execFileAsync("gh", args, { cwd: root, maxBuffer: 16 * 1024 * 1024, signal }),
-      catch: (cause) => new CommandError({ args, cause }),
-    }).pipe(Effect.map(({ stdout }) => stdout.trim())),
+    Effect.callback<string, CommandError>((resume, signal) => {
+      execFile(
+        "gh",
+        args,
+        { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, signal },
+        (error, stdout) => {
+          resume(
+            error ? Effect.fail(new CommandError({ args, cause: error })) : Effect.succeed(stdout),
+          );
+        },
+      );
+    }).pipe(Effect.map((stdout) => stdout.trim())),
 });
 
 const ArtifactSchema = Schema.Struct({ file: Schema.String, sha256: Schema.String });
@@ -177,21 +182,21 @@ const writeChecksums = Effect.fn("writeChecksums")(function* (file: string, byte
 export function rewritePom(source: string, artifactId: string, version: string): string {
   return source
     .replace(
-      /  <!-- This module was also published[\s\S]*?  <!-- do_not_remove: published-with-gradle-metadata -->\n/,
+      /  <!-- This module was also published[\s\S]*?  <!-- do_not_remove: published-with-gradle-metadata -->\n/u,
       "",
     )
-    .replace(/<groupId>[^<]+<\/groupId>/, `<groupId>${group}</groupId>`)
-    .replace(/<artifactId>[^<]+<\/artifactId>/, `<artifactId>${artifactId}</artifactId>`)
-    .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`)
-    .replaceAll(/<dependency>([\s\S]*?)<\/dependency>/g, (dependency) => {
-      const oldGroup = /<groupId>([^<]+)<\/groupId>/.exec(dependency)?.[1];
-      const oldArtifact = /<artifactId>([^<]+)<\/artifactId>/.exec(dependency)?.[1];
+    .replace(/<groupId>[^<]+<\/groupId>/u, `<groupId>${group}</groupId>`)
+    .replace(/<artifactId>[^<]+<\/artifactId>/u, `<artifactId>${artifactId}</artifactId>`)
+    .replace(/<version>[^<]+<\/version>/u, `<version>${version}</version>`)
+    .replaceAll(/<dependency>([\s\S]*?)<\/dependency>/gu, (dependency) => {
+      const oldGroup = /<groupId>([^<]+)<\/groupId>/u.exec(dependency)?.[1];
+      const oldArtifact = /<artifactId>([^<]+)<\/artifactId>/u.exec(dependency)?.[1];
       const replacement = stackDependencies.get(`${oldGroup}:${oldArtifact}`);
       if (!replacement) return dependency;
       return dependency
-        .replace(/<groupId>[^<]+<\/groupId>/, `<groupId>${group}</groupId>`)
-        .replace(/<artifactId>[^<]+<\/artifactId>/, `<artifactId>${replacement}</artifactId>`)
-        .replace(/<version>[^<]+<\/version>/, `<version>${version}</version>`);
+        .replace(/<groupId>[^<]+<\/groupId>/u, `<groupId>${group}</groupId>`)
+        .replace(/<artifactId>[^<]+<\/artifactId>/u, `<artifactId>${replacement}</artifactId>`)
+        .replace(/<version>[^<]+<\/version>/u, `<version>${version}</version>`);
     });
 }
 
@@ -210,7 +215,7 @@ const updateMetadata = Effect.fn("updateMetadata")(function* (artifactId: string
   }
   const timestamp = new Date(yield* Clock.currentTimeMillis)
     .toISOString()
-    .replaceAll(/[-:TZ.]/g, "")
+    .replaceAll(/[-:TZ.]/gu, "")
     .slice(0, 14);
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<metadata>\n  <groupId>${group}</groupId>\n  <artifactId>${artifactId}</artifactId>\n  <versioning>\n    <latest>${latest}</latest>\n    <release>${latest}</release>\n    <versions>\n${versions.map((version) => `      <version>${version}</version>`).join("\n")}\n    </versions>\n    <lastUpdated>${timestamp}</lastUpdated>\n  </versioning>\n</metadata>\n`;
   const metadata = join(dir, "maven-metadata.xml");
@@ -225,7 +230,7 @@ export const importJar = Effect.fn("importJar")(function* (
   artifact: Artifact,
   artifactId: string,
   version: string,
-  repository = site,
+  repository: string = site,
 ) {
   if (!artifact.file.endsWith("-StackAnvil.jar")) {
     return yield* new ReleaseImportError({ message: `Unbranded JAR: ${artifact.file}` });
@@ -272,15 +277,16 @@ export function hasPublishedRelease(jobs: readonly ReleaseJob[]): boolean {
   );
 }
 
-/** Returns the first run whose build and publication jobs both succeeded. */
+/** Returns the first run whose build and publication jobs both succeeded, if any. */
 export const findPublishedRun = Effect.fn("findPublishedRun")(function* <E, R>(
   runs: readonly ReleaseRun[],
   loadJobs: (runId: number) => Effect.Effect<readonly ReleaseJob[], E, R>,
 ) {
   for (const candidate of runs) {
-    if (hasPublishedRelease(yield* loadJobs(candidate.databaseId))) return candidate.databaseId;
+    if (hasPublishedRelease(yield* loadJobs(candidate.databaseId)))
+      return Option.some(candidate.databaseId);
   }
-  return undefined;
+  return Option.none();
 });
 
 const listReleaseRuns = Effect.fn("listReleaseRuns")(function* (filter: readonly string[]) {
@@ -300,7 +306,7 @@ const listReleaseRuns = Effect.fn("listReleaseRuns")(function* (filter: readonly
 /** Downloads the release build bundle. Returns false when no run published the release. */
 export const downloadReleaseBuild = Effect.fn("downloadReleaseBuild")(function* (
   tag: string,
-  directory = incoming,
+  directory: string = incoming,
 ) {
   const gh = yield* GitHubCli;
   let runs = (yield* listReleaseRuns([
@@ -315,8 +321,8 @@ export const downloadReleaseBuild = Effect.fn("downloadReleaseBuild")(function* 
     "--json",
     "databaseId,headBranch",
   ])).filter((entry) => entry.headBranch === tag);
-  if (!runs.length) {
-    const runNumber = /^stack-v0\.0\.(\d+)$/.exec(tag)?.[1];
+  if (runs.length === 0) {
+    const runNumber = /^stack-v0\.0\.(\d+)$/u.exec(tag)?.[1];
     if (runNumber) {
       const dispatched = yield* listReleaseRuns([
         "--event",
@@ -339,11 +345,11 @@ export const downloadReleaseBuild = Effect.fn("downloadReleaseBuild")(function* 
       Effect.map(({ jobs }) => jobs),
     ),
   );
-  if (runId === undefined) return false;
+  if (Option.isNone(runId)) return false;
   yield* gh.run([
     "run",
     "download",
-    String(runId),
+    String(runId.value),
     "--repo",
     sourceRepository,
     "--name",
@@ -390,7 +396,7 @@ const downloadReleaseInputs = Effect.fn("downloadReleaseInputs")(function* (tag:
 
 /** Checks every downloaded JAR against its build manifest and rejects extra JARs. */
 export const validateReleaseInputs = Effect.fn("validateReleaseInputs")(function* (
-  directory = incoming,
+  directory: string = incoming,
 ) {
   const expected = new Set<string>();
   for (const project of projects) {
