@@ -16,6 +16,9 @@
     "exactOptionalPropertyTypes": true,
     "noPropertyAccessFromIndexSignature": true,
     "noImplicitReturns": true,
+    "erasableSyntaxOnly": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["bun"]
   }
 }
