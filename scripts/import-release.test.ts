@@ -31,7 +31,7 @@ function fakeGitHub(respond: (args: readonly string[]) => string | null) {
       calls.push(args.join(" "));
       const output = respond(args);
       return output === null
-        ? Effect.fail(new CommandError({ args, cause: new Error("API unavailable") }))
+        ? Effect.fail(CommandError.make({ args, cause: new Error("API unavailable") }))
         : Effect.succeed(output);
     },
   });
@@ -60,7 +60,7 @@ test("a cancelled release does not prevent selection of a published run", async 
   ).toEqual(Option.some(2));
   const error = await failureOf(
     findPublishedRun([{ databaseId: 1 }], () =>
-      Effect.fail(new CommandError({ args: [], cause: new Error("API unavailable") })),
+      Effect.fail(CommandError.make({ args: [], cause: new Error("API unavailable") })),
     ),
   );
   expect(error.message).toBe("API unavailable");

@@ -1,6 +1,10 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The CLI adapter uses execFile maxBuffer and AbortSignal semantics.
 import { execFile } from "node:child_process";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The Maven checksum adapter needs both SHA-1 and SHA-256 hex digests.
 import { createHash } from "node:crypto";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The filesystem adapter maps Node ENOENT and writes byte buffers.
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- These synchronous path joins build local Maven and artifact paths.
 import { join } from "node:path";
 
 import { Console, Context, DateTime, Effect, Layer, Option, Schema } from "effect";
@@ -88,7 +92,7 @@ export class ReleaseImportError extends Schema.TaggedError<
 export class GitHubCli extends Context.Service<
   GitHubCli,
   { readonly run: (args: readonly string[]) => Effect.Effect<string, CommandError> }
->()("maven/GitHubCli") {}
+>()("stackanvil-maven/scripts/import-release/GitHubCli") {}
 
 export const GitHubCliLive = Layer.succeed(GitHubCli, {
   run: (args) =>
@@ -99,7 +103,9 @@ export const GitHubCliLive = Layer.succeed(GitHubCli, {
         { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, signal },
         (error, stdout) => {
           resume(
-            error ? Effect.fail(new CommandError({ args, cause: error })) : Effect.succeed(stdout),
+            error !== null
+              ? Effect.fail(CommandError.make({ args, cause: error }))
+              : Effect.succeed(stdout),
           );
         },
       );
@@ -130,7 +136,7 @@ type ReleaseJob = typeof ReleaseJobSchema.Type;
 /** Parses JSON from a file or the GitHub CLI and checks its shape. */
 function parseJson<S extends Schema.Decoder<unknown>>(schema: S, text: string, source: string) {
   return Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(
-    Effect.mapError((cause) => new JsonShapeError({ source, cause })),
+    Effect.mapError((cause) => JsonShapeError.make({ source, cause })),
   );
 }
 
@@ -141,7 +147,7 @@ function fileOperation<A>(
 ): Effect.Effect<A, FileError> {
   return Effect.tryPromise({
     try: run,
-    catch: (cause) => new FileError({ operation, path, cause }),
+    catch: (cause) => FileError.make({ operation, path, cause }),
   });
 }
 
@@ -175,8 +181,8 @@ const readProjectArtifact = Effect.fn("readProjectArtifact")(function* (
 ) {
   const manifest = yield* readManifest(join(directory, "build", project, "manifest.json"));
   const [artifact] = manifest.artifacts;
-  if (manifest.target !== project || manifest.artifacts.length !== 1 || !artifact) {
-    return yield* new ReleaseImportError({
+  if (manifest.target !== project || manifest.artifacts.length !== 1 || artifact === undefined) {
+    return yield* ReleaseImportError.make({
       message: `Expected one fully patched artifact for ${project}`,
     });
   }
@@ -212,7 +218,7 @@ export function rewritePom(source: string, artifactId: string, version: string):
       const oldGroup = /<groupId>([^<]+)<\/groupId>/u.exec(dependency)?.[1];
       const oldArtifact = /<artifactId>([^<]+)<\/artifactId>/u.exec(dependency)?.[1];
       const replacement = stackDependencies.get(`${oldGroup}:${oldArtifact}`);
-      if (!replacement) return dependency;
+      if (replacement === undefined) return dependency;
       return dependency
         .replace(/<groupId>[^<]+<\/groupId>/u, `<groupId>${group}</groupId>`)
         .replace(/<artifactId>[^<]+<\/artifactId>/u, `<artifactId>${replacement}</artifactId>`)
@@ -231,7 +237,7 @@ const updateMetadata = Effect.fn("updateMetadata")(function* (artifactId: string
     .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const latest = versions.at(-1);
   if (latest === undefined) {
-    return yield* new ReleaseImportError({ message: `No Maven versions for ${artifactId}` });
+    return yield* ReleaseImportError.make({ message: `No Maven versions for ${artifactId}` });
   }
   const now = yield* DateTime.now;
   const timestamp = DateTime.formatIso(now)
@@ -253,15 +259,15 @@ export const importJar = Effect.fn("importJar")(function* (
   repository: string = site,
 ) {
   if (!artifact.file.endsWith("-StackAnvil.jar")) {
-    return yield* new ReleaseImportError({ message: `Unbranded JAR: ${artifact.file}` });
+    return yield* ReleaseImportError.make({ message: `Unbranded JAR: ${artifact.file}` });
   }
   const jar = yield* readBytes(source);
   if (checksum(jar, "sha256") !== artifact.sha256) {
-    return yield* new ChecksumMismatchError({ file: artifact.file });
+    return yield* ChecksumMismatchError.make({ file: artifact.file });
   }
   const versionDir = join(repository, groupPath, artifactId, version);
   if (yield* exists(versionDir)) {
-    return yield* new ReleaseImportError({
+    return yield* ReleaseImportError.make({
       message: `Release ${version} already has Maven files for ${artifactId}`,
     });
   }
@@ -344,7 +350,7 @@ export const downloadReleaseBuild = Effect.fn("downloadReleaseBuild")(function* 
   ])).filter((entry) => entry.headBranch === tag);
   if (runs.length === 0) {
     const runNumber = /^stack-v0\.0\.(\d+)$/u.exec(tag)?.[1];
-    if (runNumber) {
+    if (runNumber !== undefined) {
       const dispatched = yield* listReleaseRuns([
         "--event",
         "workflow_dispatch",
@@ -408,7 +414,7 @@ const downloadReleaseInputs = Effect.fn("downloadReleaseInputs")(function* (tag:
   ]);
   const downloaded = yield* listJars(jars);
   if (downloaded.length !== projects.length) {
-    return yield* new ReleaseImportError({
+    return yield* ReleaseImportError.make({
       message: `Expected ${projects.length} release JARs for ${tag}, found ${downloaded.length}`,
     });
   }
@@ -423,18 +429,18 @@ export const validateReleaseInputs = Effect.fn("validateReleaseInputs")(function
   for (const project of projects) {
     const artifact = yield* readProjectArtifact(directory, project);
     if (expected.has(artifact.file)) {
-      return yield* new ReleaseImportError({ message: `Duplicate release JAR: ${artifact.file}` });
+      return yield* ReleaseImportError.make({ message: `Duplicate release JAR: ${artifact.file}` });
     }
     expected.add(artifact.file);
     const bytes = yield* readBytes(join(directory, "jars", artifact.file));
     if (checksum(bytes, "sha256") !== artifact.sha256) {
-      return yield* new ChecksumMismatchError({ file: artifact.file });
+      return yield* ChecksumMismatchError.make({ file: artifact.file });
     }
     yield* readBytes(join(directory, "build", project, "pom.xml"));
   }
   const unexpected = (yield* listJars(join(directory, "jars"))).find((file) => !expected.has(file));
-  if (unexpected) {
-    return yield* new ReleaseImportError({ message: `Unexpected release JAR: ${unexpected}` });
+  if (unexpected !== undefined) {
+    return yield* ReleaseImportError.make({ message: `Unexpected release JAR: ${unexpected}` });
   }
 });
 
@@ -445,8 +451,8 @@ const RequestedTagSchema = Schema.UndefinedOr(Schema.String.check(Schema.isPatte
 /** Imports every new release, or only `requestedTag` when it is set. */
 export const importReleases = Effect.fn("importReleases")(function* (requestedTag?: string) {
   const tagFilter = yield* Schema.decodeEffect(RequestedTagSchema)(requestedTag).pipe(
-    Effect.mapError(
-      () => new ReleaseImportError({ message: `Invalid release tag: ${requestedTag}` }),
+    Effect.mapError(() =>
+      ReleaseImportError.make({ message: `Invalid release tag: ${requestedTag}` }),
     ),
   );
   let imported: string[] = [];
@@ -470,7 +476,7 @@ export const importReleases = Effect.fn("importReleases")(function* (requestedTa
   const releases = yield* parseJson(Schema.Array(ReleaseSchema), output, "gh release list");
   for (const release of releases) {
     const tag = release.tagName;
-    if (tagFilter && tag !== tagFilter) continue;
+    if (tagFilter !== undefined && tagFilter !== "" && tag !== tagFilter) continue;
     if (release.isDraft || release.isPrerelease || !releaseTag.test(tag) || imported.includes(tag))
       continue;
     yield* remove(incoming);
@@ -487,8 +493,8 @@ export const importReleases = Effect.fn("importReleases")(function* (requestedTa
     yield* write(stateFile, `${encodeImportState(imported)}\n`);
     yield* Console.log(`Imported ${tag}`);
   }
-  if (tagFilter && !imported.includes(tagFilter)) {
-    return yield* new ReleaseImportError({ message: `Release was not imported: ${tagFilter}` });
+  if (tagFilter !== undefined && tagFilter !== "" && !imported.includes(tagFilter)) {
+    return yield* ReleaseImportError.make({ message: `Release was not imported: ${tagFilter}` });
   }
   yield* remove(incoming);
 });

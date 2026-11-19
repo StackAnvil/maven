@@ -17,7 +17,7 @@ export class FetchError extends Schema.TaggedError<FetchError, { readonly brand:
 export class Fetcher extends Context.Service<
   Fetcher,
   { readonly fetch: (input: string | Request) => Effect.Effect<Response, FetchError> }
->()("maven/Fetcher") {}
+>()("stackanvil-maven/worker/Fetcher") {}
 
 export function makeFetcher(
   fetch: (input: string | Request) => Promise<Response>,
@@ -27,7 +27,7 @@ export function makeFetcher(
       Effect.tryPromise({
         try: async () => fetch(input),
         catch: (cause) =>
-          new FetchError({ url: typeof input === "string" ? input : input.url, cause }),
+          FetchError.make({ url: typeof input === "string" ? input : input.url, cause }),
       }),
   };
 }
@@ -47,10 +47,10 @@ const readDownloadLocation = Effect.fn("readDownloadLocation")(function* (url: s
   const fetcher = yield* Fetcher;
   const metadata = yield* fetcher.fetch(url);
   if (metadata.status === 404) return Option.none();
-  if (!metadata.ok) return yield* new MetadataStatusError({ url, status: metadata.status });
+  if (!metadata.ok) return yield* MetadataStatusError.make({ url, status: metadata.status });
   const text = yield* Effect.tryPromise({
     try: async () => metadata.text(),
-    catch: (cause) => new FetchError({ url, cause }),
+    catch: (cause) => FetchError.make({ url, cause }),
   });
   return Option.some(text.trim());
 });
@@ -81,6 +81,7 @@ export const handleRequest = Effect.fn("handleRequest")(function* (request: Requ
   });
 });
 
+// oxlint-disable-next-line effecttsgo/global-fetch -- Cloudflare origin passthrough forwards the original Web Request and Response.
 const liveFetcher = makeFetcher(async (input) => fetch(input));
 
 export default {
