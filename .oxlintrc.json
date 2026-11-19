@@ -81,6 +81,13 @@
     "typescript/prefer-nullish-coalescing": "error",
     "typescript/require-await": "error",
     "typescript/no-non-null-assertion": "error",
+    "typescript/consistent-type-definitions": ["error", "type"],
+    "typescript/array-type": "error",
+    "typescript/no-inferrable-types": "error",
+    "typescript/prefer-function-type": "error",
+    "typescript/consistent-indexed-object-style": "error",
+    "unicorn/switch-case-braces": "error",
+    "eslint/no-useless-assignment": "error",
     // Pedantic rules that only measure size, encode style opinions, or duplicate configured rules.
     "typescript/prefer-readonly-parameter-types": "off",
     "eslint/max-lines": "off",
