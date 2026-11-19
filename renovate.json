@@ -1,4 +1,9 @@
 {
-  "extends": ["config:recommended", "group:allNonMajor", ":semanticCommits"],
+  "extends": [
+    "config:recommended",
+    "group:allNonMajor",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
   "reviewers": ["AlexProgrammerDE"]
 }
