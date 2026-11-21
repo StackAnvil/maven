@@ -11,16 +11,16 @@
     "deploy": "cf deploy"
   },
   "dependencies": {
-    "effect": "4.1.4"
+    "effect": "4.1.5"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "2.0.0-beta.v.17",
-    "@effect/tsgo": "0.70.0",
-    "@types/bun": "1.4.4",
-    "cf": "1.0.0-beta.32",
+    "@cloudflare/vite-plugin": "2.0.0-rc.3",
+    "@effect/tsgo": "0.73.2",
+    "@types/bun": "1.4.5",
+    "cf": "1.0.0-rc.2",
     "oxfmt": "0.79.0",
     "oxlint": "1.94.0",
-    "oxlint-tsgolint": "7.0.2007",
+    "oxlint-tsgolint": "7.0.2008",
     "vite": "8.3.8"
   }
 }
